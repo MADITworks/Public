@@ -503,6 +503,12 @@ def _show_history():
         st.info("No saved quotes yet.")
         return
 
+    # Cache de bytes de Excel ya descargados en esta sesión, para no volver
+    # a pedirlos a GitHub en cada rerender (patrón de 2 pasos requerido por
+    # st.download_button, que necesita los bytes disponibles de antemano).
+    if "quote_file_cache" not in st.session_state:
+        st.session_state["quote_file_cache"] = {}
+
     clients = sorted(set(q.get("client", "—") for q in quotes))
     col_f, _ = st.columns([1, 3])
     with col_f:
@@ -525,15 +531,16 @@ def _show_history():
         recs_sorted = sorted(recs, key=_date_key, reverse=True)
 
         with st.expander(f"🏢 {client}  ·  {len(recs_sorted)} quote(s)", expanded=(client_filter != "All")):
-            hc1, hc2, hc3, hc4, hc5 = st.columns([2.5, 1.5, 2, 1.5, 1])
+            hc1, hc2, hc3, hc4, hc5, hc6 = st.columns([2.2, 1.3, 1.8, 1.3, 0.9, 1.3])
             hc1.markdown("**Title**")
             hc2.markdown("**Date**")
             hc3.markdown("**Quote #**")
             hc4.markdown("**Total (Sell)**")
             hc5.markdown("")
+            hc6.markdown("")
 
             for rec in recs_sorted:
-                c1, c2, c3, c4, c5 = st.columns([2.5, 1.5, 2, 1.5, 1])
+                c1, c2, c3, c4, c5, c6 = st.columns([2.2, 1.3, 1.8, 1.3, 0.9, 1.3])
                 c1.write(rec.get("title", "—") or "—")
                 c2.write(rec.get("date", "—"))
                 c3.write(f"#{rec.get('quote_number', '—')}  ({rec.get('distributor', '—')})")
@@ -543,6 +550,29 @@ def _show_history():
                         _load_saved_quote(rec)
                         st.session_state["quote_view"] = "new"
                         st.rerun()
+                with c6:
+                    cache    = st.session_state["quote_file_cache"]
+                    filename = rec.get("filename", "")
+                    if not filename:
+                        st.caption("—")
+                    elif rec["id"] in cache:
+                        st.download_button(
+                            "⬇️ Save",
+                            data=cache[rec["id"]],
+                            file_name=filename,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_{rec['id']}",
+                            use_container_width=True,
+                        )
+                    else:
+                        if st.button("⬇️ File", key=f"prep_{rec['id']}", use_container_width=True):
+                            try:
+                                with st.spinner("Fetching file..."):
+                                    file_bytes = quotes_repo.download_quote_excel(filename)
+                                cache[rec["id"]] = file_bytes
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Could not download: {e}")
 
 
 # ── New Quote / View Saved Quote ────────────────────────────────────────────────
@@ -623,7 +653,20 @@ def _show_new_quote():
 
     # ── Step 2: upload distributor quote (skipped if loaded from repo) ───────
     if loaded_id:
-        st.caption(f"📎 Original Excel: {st.session_state.get('original_excel_name', '')}")
+        cap_col, dl_col = st.columns([4, 1])
+        with cap_col:
+            st.caption(f"📎 Original Excel: {st.session_state.get('original_excel_name', '')}")
+        with dl_col:
+            original_bytes = st.session_state.get("original_excel_bytes")
+            if original_bytes:
+                st.download_button(
+                    "⬇️ Download",
+                    data=original_bytes,
+                    file_name=st.session_state.get("original_excel_name", "quote.xlsx"),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_loaded_original",
+                    use_container_width=True,
+                )
     else:
         uploaded = st.file_uploader(
             "Upload distributor quote (.xlsx or .xls)",
@@ -833,7 +876,7 @@ def _show_new_quote():
     with col_mid:
         st.markdown(render_summary_table(summary), unsafe_allow_html=True)
 
-    # ── Save to Repository (MADIT-Private) ──────────────────────────────────────
+    # ── Save to Repository ──────────────────────────────────────────────────────
     st.divider()
     st.markdown("### 💾 Save to Repository")
 
@@ -842,7 +885,7 @@ def _show_new_quote():
         st.warning("Fill in at least **Company** and **Proposal title** to be able to save.")
 
     if st.button("💾 Save Quote", type="primary", disabled=not can_save):
-        with st.spinner("Saving to MADIT-Private..."):
+        with st.spinner("Saving to repository..."):
             try:
                 record = quotes_repo.save_quote(
                     client=st.session_state["quote_client"],
