@@ -446,9 +446,17 @@ NEW_QUOTE_STATE_KEYS = [
     "client_step_done", "confirmed_client_info",
 ]
 
-# Selectbox keys that must be dropped whenever the underlying client/contact
-# changes, so they re-initialize from `index=` instead of a stale value.
-CLIENT_FORM_WIDGET_KEYS = ["company_select", "contact_select"]
+# Draft widget keys used inside the Client & Contact form. These are
+# intentionally SEPARATE from the canonical `quote_*` keys — nothing is
+# written to the canonical keys until the person clicks the corresponding
+# "✔ Save" button for that field, so there's never any ambiguity about
+# what's actually been committed.
+CLIENT_FORM_WIDGET_KEYS = [
+    "company_select_widget", "company_new_name_draft",
+    "contact_select_widget", "contact_new_name_draft",
+    "contact_title_draft", "contact_mobile_draft", "contact_email_draft",
+    "_company_field_error", "_contact_field_error", "_email_field_error",
+]
 
 NEW_COMPANY_LABEL = "➕ New company..."
 NEW_CONTACT_LABEL = "➕ New contact..."
@@ -500,8 +508,15 @@ def _validate_client_step() -> list[str]:
 
 
 def _render_client_contact_form(clients_db: dict):
-    """Renderiza los campos de Company / Contact / Title / Mobile / Email,
-    ligados a session_state. Se usa únicamente en el Paso 1."""
+    """Renderiza los campos de Company / Contact / Title / Mobile / Email.
+
+    Cada campo tiene su PROPIO botón "✔ Save". Los widgets escriben en una
+    clave 'draft' separada; nada llega a las claves canónicas (`quote_client`,
+    `quote_contact`, ...) — que son las que lee la validación y el resto de
+    la app — hasta que se pulsa el botón de ese campo. Así se elimina
+    cualquier ambigüedad sobre si un valor "quedó guardado" o no: debajo de
+    cada campo se muestra explícitamente el valor realmente confirmado.
+    """
 
     with st.container(border=True):
         hcol1, hcol2 = st.columns([5, 1.3])
@@ -518,67 +533,168 @@ def _render_client_contact_form(clients_db: dict):
 
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
-        # ── Company — full width ─────────────────────────────────────────────
-        company_options = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
-        current_client   = st.session_state.get("quote_client", "")
-        default_idx = company_options.index(current_client) if current_client in clients_db else len(company_options) - 1
+        # ── Company ───────────────────────────────────────────────────────────
+        company_options  = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
+        confirmed_client = st.session_state.get("quote_client", "")
+        default_idx = company_options.index(confirmed_client) if confirmed_client in clients_db else len(company_options) - 1
 
-        def _on_company_change():
-            choice = st.session_state["company_select"]
-            st.session_state.pop("contact_select", None)
-            if choice != NEW_COMPANY_LABEL:
-                st.session_state["quote_client"]         = choice
-                st.session_state["quote_contact"]        = ""
-                st.session_state["quote_email"]          = ""
-                st.session_state["quote_contact_title"]  = ""
-                st.session_state["quote_contact_mobile"] = ""
-            else:
-                st.session_state["quote_client"] = ""
+        comp_col, comp_btn_col = st.columns([5, 1.3])
+        with comp_col:
+            st.selectbox("🏢 Company", company_options, index=default_idx, key="company_select_widget")
+            if st.session_state["company_select_widget"] == NEW_COMPANY_LABEL:
+                st.text_input(
+                    "New company name",
+                    key="company_new_name_draft",
+                    value=st.session_state.get(
+                        "company_new_name_draft",
+                        confirmed_client if confirmed_client not in clients_db else "",
+                    ),
+                )
+        with comp_btn_col:
+            st.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
+            if st.button("✔ Save", key="btn_set_company", use_container_width=True):
+                chosen = st.session_state["company_select_widget"]
+                new_client = (
+                    st.session_state.get("company_new_name_draft", "").strip()
+                    if chosen == NEW_COMPANY_LABEL else chosen
+                )
+                if not new_client:
+                    st.session_state["_company_field_error"] = "Enter a company name."
+                else:
+                    if new_client != confirmed_client:
+                        # La empresa cambió → los campos de contacto dependientes
+                        # quedan obsoletos y se limpian, junto con sus borradores.
+                        st.session_state["quote_contact"]        = ""
+                        st.session_state["quote_contact_title"]  = ""
+                        st.session_state["quote_contact_mobile"] = ""
+                        st.session_state["quote_email"]          = ""
+                        for k in ("contact_select_widget", "contact_new_name_draft",
+                                  "contact_title_draft", "contact_mobile_draft", "contact_email_draft"):
+                            st.session_state.pop(k, None)
+                    st.session_state["quote_client"] = new_client
+                    st.session_state.pop("_company_field_error", None)
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        st.selectbox("🏢 Company", company_options, index=default_idx, key="company_select", on_change=_on_company_change)
+        if st.session_state.get("_company_field_error"):
+            st.error(st.session_state["_company_field_error"])
+        st.caption(f"✅ Saved company: **{st.session_state.get('quote_client') or '— not set —'}**")
 
-        if st.session_state["company_select"] == NEW_COMPANY_LABEL:
-            st.text_input("New company name", key="quote_client")
-
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
         # ── Contact Name / Contact Title ─────────────────────────────────────
+        confirmed_client = st.session_state.get("quote_client", "")
+        contacts_list    = clients_db.get(confirmed_client, [])
+        contact_names    = [c.get("contact", "") for c in contacts_list if c.get("contact")]
+        contact_options  = contact_names + [NEW_CONTACT_LABEL]
+        confirmed_contact = st.session_state.get("quote_contact", "")
+        default_c_idx = contact_options.index(confirmed_contact) if confirmed_contact in contact_names else len(contact_options) - 1
+
         cc1, cc2 = st.columns(2)
         with cc1:
-            contacts_list   = clients_db.get(st.session_state.get("quote_client", ""), [])
-            contact_names   = [c.get("contact", "") for c in contacts_list if c.get("contact")]
-            contact_options = contact_names + [NEW_CONTACT_LABEL]
-            current_contact = st.session_state.get("quote_contact", "")
-            default_c_idx = contact_options.index(current_contact) if current_contact in contact_names else len(contact_options) - 1
-
-            def _on_contact_change():
-                choice = st.session_state["contact_select"]
-                if choice != NEW_CONTACT_LABEL:
-                    match = next((c for c in contacts_list if c.get("contact") == choice), None)
-                    st.session_state["quote_contact"]        = choice
-                    st.session_state["quote_email"]          = match.get("email", "")  if match else ""
-                    st.session_state["quote_contact_title"]  = match.get("title", "")  if match else ""
-                    st.session_state["quote_contact_mobile"] = match.get("mobile", "") if match else ""
+            name_col, name_btn_col = st.columns([4, 1.5])
+            with name_col:
+                if not confirmed_client:
+                    st.selectbox("👤 Contact Name", [NEW_CONTACT_LABEL], index=0,
+                                 key="contact_select_widget", disabled=True)
+                    st.caption("⚠️ Save the company first.")
                 else:
-                    st.session_state["quote_contact"]        = ""
-                    st.session_state["quote_email"]          = ""
-                    st.session_state["quote_contact_title"]  = ""
-                    st.session_state["quote_contact_mobile"] = ""
+                    st.selectbox("👤 Contact Name", contact_options, index=default_c_idx, key="contact_select_widget")
+                    if st.session_state["contact_select_widget"] == NEW_CONTACT_LABEL:
+                        st.text_input(
+                            "New contact name",
+                            key="contact_new_name_draft",
+                            value=st.session_state.get(
+                                "contact_new_name_draft",
+                                confirmed_contact if confirmed_contact not in contact_names else "",
+                            ),
+                        )
+            with name_btn_col:
+                st.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
+                if st.button("✔ Save", key="btn_set_contact", use_container_width=True, disabled=not confirmed_client):
+                    chosen = st.session_state.get("contact_select_widget", NEW_CONTACT_LABEL)
+                    match  = None
+                    if chosen == NEW_CONTACT_LABEL:
+                        new_contact = st.session_state.get("contact_new_name_draft", "").strip()
+                    else:
+                        new_contact = chosen
+                        match = next((c for c in contacts_list if c.get("contact") == chosen), None)
 
-            st.selectbox("👤 Contact Name", contact_options, index=default_c_idx, key="contact_select", on_change=_on_contact_change)
+                    if not new_contact:
+                        st.session_state["_contact_field_error"] = "Enter a contact name."
+                    else:
+                        st.session_state["quote_contact"] = new_contact
+                        st.session_state.pop("_contact_field_error", None)
+                        if match:
+                            # Contacto existente: se heredan sus datos directamente.
+                            st.session_state["quote_email"]          = match.get("email", "")
+                            st.session_state["quote_contact_title"]  = match.get("title", "")
+                            st.session_state["quote_contact_mobile"] = match.get("mobile", "")
+                            for k in ("contact_title_draft", "contact_mobile_draft", "contact_email_draft"):
+                                st.session_state.pop(k, None)
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
-            if st.session_state["contact_select"] == NEW_CONTACT_LABEL:
-                st.text_input("New contact name", key="quote_contact")
+            if st.session_state.get("_contact_field_error"):
+                st.error(st.session_state["_contact_field_error"])
+            st.caption(f"✅ Saved contact: **{st.session_state.get('quote_contact') or '— not set —'}**")
 
         with cc2:
-            st.text_input("💼 Contact Title", key="quote_contact_title")
+            title_col, title_btn_col = st.columns([4, 1.5])
+            with title_col:
+                st.text_input(
+                    "💼 Contact Title",
+                    key="contact_title_draft",
+                    value=st.session_state.get("contact_title_draft", st.session_state.get("quote_contact_title", "")),
+                )
+            with title_btn_col:
+                st.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
+                if st.button("✔ Save", key="btn_set_title", use_container_width=True):
+                    st.session_state["quote_contact_title"] = st.session_state.get("contact_title_draft", "").strip()
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+            st.caption(f"✅ Saved title: **{st.session_state.get('quote_contact_title') or '— not set —'}**")
 
         # ── Mobile Phone / Email ─────────────────────────────────────────────
         cc3, cc4 = st.columns(2)
         with cc3:
-            st.text_input("📱 Mobile Phone", key="quote_contact_mobile")
+            mob_col, mob_btn_col = st.columns([4, 1.5])
+            with mob_col:
+                st.text_input(
+                    "📱 Mobile Phone",
+                    key="contact_mobile_draft",
+                    value=st.session_state.get("contact_mobile_draft", st.session_state.get("quote_contact_mobile", "")),
+                )
+            with mob_btn_col:
+                st.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
+                if st.button("✔ Save", key="btn_set_mobile", use_container_width=True):
+                    st.session_state["quote_contact_mobile"] = st.session_state.get("contact_mobile_draft", "").strip()
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+            st.caption(f"✅ Saved mobile: **{st.session_state.get('quote_contact_mobile') or '— not set —'}**")
+
         with cc4:
-            st.text_input("✉️ Email", key="quote_email")
+            email_col, email_btn_col = st.columns([4, 1.5])
+            with email_col:
+                st.text_input(
+                    "✉️ Email",
+                    key="contact_email_draft",
+                    value=st.session_state.get("contact_email_draft", st.session_state.get("quote_email", "")),
+                )
+            with email_btn_col:
+                st.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
+                if st.button("✔ Save", key="btn_set_email", use_container_width=True):
+                    val = st.session_state.get("contact_email_draft", "").strip()
+                    if val and not _EMAIL_RE.match(val):
+                        st.session_state["_email_field_error"] = "That doesn't look like a valid email."
+                    else:
+                        st.session_state["quote_email"] = val
+                        st.session_state.pop("_email_field_error", None)
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+            if st.session_state.get("_email_field_error"):
+                st.error(st.session_state["_email_field_error"])
+            st.caption(f"✅ Saved email: **{st.session_state.get('quote_email') or '— not set —'}**")
 
 
 def _load_saved_quote(record: dict):
