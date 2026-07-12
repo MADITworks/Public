@@ -13,15 +13,23 @@ def _headers():
     }
 
 def _repo_base():
+    # El repo sigue siendo el que ya tenías configurado en secrets
+    # (owner/private_repo) — normalmente "Private". No se toca.
     owner = st.secrets["github"]["owner"]
     repo  = st.secrets["github"]["private_repo"]
     return f"https://api.github.com/repos/{owner}/{repo}"
 
 
+# ── Carpeta base dentro del repo ────────────────────────────────────────────────
+# Todo lo relativo a esta app (Quotes/ y Clients/) cuelga de esta carpeta,
+# en vez de la raíz del repo.
+BASE_PATH = "Propiestary_tools"
+
+
 # ── Leer el índice ─────────────────────────────────────────────────────────────
 def _get_index() -> tuple[list, str | None]:
-    """Lee Quotes/index.json del repo privado. Devuelve (data, sha)."""
-    url = f"{_repo_base()}/contents/Quotes/index.json"
+    """Lee {BASE_PATH}/Quotes/index.json. Devuelve (data, sha)."""
+    url = f"{_repo_base()}/contents/{BASE_PATH}/Quotes/index.json"
     r   = requests.get(url, headers=_headers())
     if r.status_code == 404:
         return [], None
@@ -33,7 +41,7 @@ def _get_index() -> tuple[list, str | None]:
 
 # ── Guardar el índice ──────────────────────────────────────────────────────────
 def _save_index(data: list, sha: str | None, message: str):
-    url     = f"{_repo_base()}/contents/Quotes/index.json"
+    url     = f"{_repo_base()}/contents/{BASE_PATH}/Quotes/index.json"
     content = base64.b64encode(
         json.dumps(data, indent=2, ensure_ascii=False).encode()
     ).decode()
@@ -46,7 +54,7 @@ def _save_index(data: list, sha: str | None, message: str):
 
 # ── Guardar el Excel original ──────────────────────────────────────────────────
 def _upload_excel(filename: str, file_bytes: bytes):
-    url     = f"{_repo_base()}/contents/Quotes/{filename}"
+    url     = f"{_repo_base()}/contents/{BASE_PATH}/Quotes/{filename}"
     content = base64.b64encode(file_bytes).decode()
     # Verificar si ya existe (para obtener sha)
     r_check = requests.get(url, headers=_headers())
@@ -62,7 +70,7 @@ def _upload_excel(filename: str, file_bytes: bytes):
 
 # ── Guardar / actualizar el detalle completo (meta + items) ───────────────────
 def _data_path(record_id: str) -> str:
-    return f"Quotes/data/{record_id}.json"
+    return f"{BASE_PATH}/Quotes/data/{record_id}.json"
 
 
 def _save_detail(record_id: str, detail: dict, message: str):
@@ -103,10 +111,15 @@ def save_quote(
     record_id:          str | None = None,
 ) -> dict:
     """
-    Guarda (o actualiza, si se pasa record_id) la oferta en MADIT-Private:
-    - Sube el Excel original a Quotes/ (si se provee file_bytes)
-    - Guarda el detalle completo (meta + items editados) en Quotes/data/{id}.json
-    - Añade / actualiza la entrada en el índice Quotes/index.json
+    Guarda (o actualiza, si se pasa record_id) la oferta en
+    {BASE_PATH}/Quotes dentro del repo privado:
+    - Sube el Excel original a {BASE_PATH}/Quotes/ (si se provee file_bytes)
+    - Guarda el detalle completo (meta + items editados) en
+      {BASE_PATH}/Quotes/data/{id}.json
+    - Añade / actualiza la entrada en el índice
+      {BASE_PATH}/Quotes/index.json, incluyendo el nombre del Excel original
+      ("filename"), que queda así enlazado al registro y disponible para
+      descarga posterior desde el histórico.
     """
     is_update = record_id is not None
     rid = record_id or datetime.now().strftime("%Y%m%d%H%M%S")
@@ -137,7 +150,7 @@ def save_quote(
         "margin_pct":   margin_pct,
         "cost_total":   cost_total,
         "sell_total":   sell_total,
-        "filename":     filename,
+        "filename":     filename,   # <- enlace al Excel original, usado por download_quote_excel()
     }
 
     # Índice (resumen)
@@ -160,15 +173,17 @@ def save_quote(
 
 # ── Cargar historial (resumen) ─────────────────────────────────────────────────
 def load_quotes() -> list:
-    """Devuelve todas las quotes guardadas (resumen para el listado del historial)."""
+    """Devuelve todas las quotes guardadas (resumen para el listado del historial).
+    Cada registro incluye "filename", el Excel original enlazado."""
     index, _ = _get_index()
     return index
 
 
 # ── Descargar Excel de una quote ───────────────────────────────────────────────
 def download_quote_excel(filename: str) -> bytes:
-    """Descarga el Excel original de una quote guardada."""
-    url = f"{_repo_base()}/contents/Quotes/{filename}"
+    """Descarga el Excel original de una quote guardada, dado su filename
+    (tal y como viene en el registro del índice / detalle)."""
+    url = f"{_repo_base()}/contents/{BASE_PATH}/Quotes/{filename}"
     r   = requests.get(url, headers=_headers())
     r.raise_for_status()
     return base64.b64decode(r.json()["content"])
@@ -180,13 +195,14 @@ def get_clients() -> list[str]:
     return sorted(set(q["client"] for q in index if q.get("client")))
 
 
-# ── Base de datos de clientes / contactos (Clients/clients.json) ──────────────
-CLIENTS_PATH = "Clients/clients.json"
+# ── Base de datos de clientes / contactos ({BASE_PATH}/Clients/clients.json) ──
+def _clients_path() -> str:
+    return f"{BASE_PATH}/Clients/clients.json"
 
 
 def _get_clients_db() -> tuple[dict, str | None]:
-    """Lee Clients/clients.json del repo privado. Devuelve (data, sha)."""
-    url = f"{_repo_base()}/contents/{CLIENTS_PATH}"
+    """Lee {BASE_PATH}/Clients/clients.json. Devuelve (data, sha)."""
+    url = f"{_repo_base()}/contents/{_clients_path()}"
     r   = requests.get(url, headers=_headers())
     if r.status_code == 404:
         return {}, None
@@ -197,7 +213,7 @@ def _get_clients_db() -> tuple[dict, str | None]:
 
 
 def _save_clients_db(data: dict, sha: str | None, message: str):
-    url     = f"{_repo_base()}/contents/{CLIENTS_PATH}"
+    url     = f"{_repo_base()}/contents/{_clients_path()}"
     content = base64.b64encode(
         json.dumps(data, indent=2, ensure_ascii=False).encode()
     ).decode()
