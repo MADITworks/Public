@@ -619,11 +619,19 @@ def _show_new_quote():
     clients_db = st.session_state["clients_db"]
 
     with st.container(border=True):
-        st.markdown(
-            "<div style='font-size:0.95rem;font-weight:700;color:#1a2a3a;"
-            "letter-spacing:.02em;margin-bottom:10px;'>🏢 CLIENT &amp; CONTACT</div>",
-            unsafe_allow_html=True,
-        )
+        hcol1, hcol2 = st.columns([5, 1.3])
+        with hcol1:
+            st.markdown(
+                "<div style='font-size:0.95rem;font-weight:700;color:#1a2a3a;"
+                "letter-spacing:.02em;margin-top:6px;'>🏢 CLIENT &amp; CONTACT</div>",
+                unsafe_allow_html=True,
+            )
+        with hcol2:
+            if st.button("🔄 Refresh clients", key="refresh_clients_db", use_container_width=True):
+                st.session_state.pop("clients_db", None)
+                st.rerun()
+
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
         # ── Company — full width ─────────────────────────────────────────────
         company_options = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
