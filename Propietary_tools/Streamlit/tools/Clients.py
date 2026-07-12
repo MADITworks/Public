@@ -1,5 +1,4 @@
 import streamlit as st
-import html as _html
 from tools import quotes_repo
 
 
@@ -14,9 +13,24 @@ FORM_KEYS = [
 FORM_WIDGET_KEYS = ["client_company_select", "client_contact_select"]
 
 
+# ── Flash messages ──────────────────────────────────────────────────────────────
+# Streamlit no permite llamar st.success/st.error de forma fiable dentro de un
+# on_click callback, así que guardamos el mensaje en session_state y lo
+# mostramos al comienzo del siguiente render.
+def _flash(msg: str, kind: str = "success"):
+    st.session_state["_client_flash"] = (kind, msg)
+
+
+def _show_flash():
+    flash = st.session_state.pop("_client_flash", None)
+    if flash:
+        kind, msg = flash
+        getattr(st, kind)(msg)
+
+
 # ── Data helpers ─────────────────────────────────────────────────────────────
-def _load_db(force: bool = False) -> dict:
-    if force or "clients_db_page" not in st.session_state:
+def _load_db() -> dict:
+    if "clients_db_page" not in st.session_state:
         try:
             st.session_state["clients_db_page"] = quotes_repo.load_clients_db()
         except Exception as e:
@@ -29,7 +43,7 @@ def _refresh_db():
     st.session_state.pop("clients_db_page", None)
 
 
-# ── Form state helpers ────────────────────────────────────────────────────────
+# ── Form state helpers (todas se usan SOLO como on_click callbacks) ────────────
 def _reset_form():
     for key in FORM_KEYS + FORM_WIDGET_KEYS:
         st.session_state.pop(key, None)
@@ -68,6 +82,102 @@ def _start_new_contact_for(company: str):
     st.session_state["client_form_original_contact"] = ""
 
 
+# ── Acciones (on_click callbacks) ───────────────────────────────────────────────
+def _handle_save():
+    company_val = st.session_state.get("client_form_company", "").strip()
+    if not company_val:
+        _flash("Company is required.", "error")
+        return
+
+    contact_val       = st.session_state.get("client_form_contact", "").strip()
+    original_contact  = st.session_state.get("client_form_original_contact", "").strip()
+    original_company  = st.session_state.get("client_form_original_company", "").strip()
+
+    try:
+        quotes_repo.create_client_company(company_val)
+
+        # Si estamos "creando" un contacto (old_contact vacío) pero ya existe
+        # uno con el mismo nombre en esta empresa, lo tratamos como una
+        # actualización en vez de crear un duplicado.
+        effective_old_contact = original_contact
+        if not effective_old_contact and contact_val:
+            fresh_db = quotes_repo.load_clients_db()
+            existing = fresh_db.get(company_val, [])
+            match = next(
+                (c for c in existing if c.get("contact", "").strip().lower() == contact_val.lower()),
+                None,
+            )
+            if match:
+                effective_old_contact = match.get("contact", "")
+
+        quotes_repo.update_client_contact(
+            client=company_val,
+            old_contact=effective_old_contact,
+            new_contact=contact_val,
+            email=st.session_state.get("client_form_email", ""),
+            title=st.session_state.get("client_form_title", ""),
+            mobile=st.session_state.get("client_form_mobile", ""),
+        )
+
+        # Si el contacto se movió de empresa (se editó y se cambió el
+        # dropdown de Company), lo quitamos de la empresa original.
+        if original_contact and original_company and original_company != company_val:
+            quotes_repo.delete_client_contact(original_company, original_contact)
+
+        _flash(f"✅ Saved — {company_val}" + (f" / {contact_val}" if contact_val else ""))
+        _refresh_db()
+        _reset_form()
+    except Exception as e:
+        _flash(f"❌ Error saving: {e}", "error")
+
+
+def _handle_delete_contact_from_form():
+    company = st.session_state.get("client_form_original_company", "")
+    contact = st.session_state.get("client_form_original_contact", "")
+    try:
+        quotes_repo.delete_client_contact(company, contact)
+        _flash(f"✅ Contact deleted: {contact}")
+        _refresh_db()
+        _reset_form()
+    except Exception as e:
+        _flash(f"❌ Error deleting contact: {e}", "error")
+
+
+def _handle_delete_contact_row(company: str, contact_name: str):
+    try:
+        quotes_repo.delete_client_contact(company, contact_name)
+        _flash(f"✅ Deleted {contact_name}")
+        _refresh_db()
+        # si justo ese contacto estaba cargado en el formulario, lo limpiamos
+        if (
+            st.session_state.get("client_form_original_company") == company
+            and st.session_state.get("client_form_original_contact") == contact_name
+        ):
+            _reset_form()
+    except Exception as e:
+        _flash(f"❌ Error deleting: {e}", "error")
+
+
+def _ask_delete_company(company: str):
+    st.session_state[f"confirm_delete_company_{company}"] = True
+
+
+def _cancel_delete_company(company: str):
+    st.session_state.pop(f"confirm_delete_company_{company}", None)
+
+
+def _handle_delete_company(company: str):
+    try:
+        quotes_repo.delete_client_company(company)
+        _flash(f"✅ Deleted company {company}")
+        _refresh_db()
+        st.session_state.pop(f"confirm_delete_company_{company}", None)
+        if st.session_state.get("client_form_company") == company:
+            _reset_form()
+    except Exception as e:
+        _flash(f"❌ Error deleting company: {e}", "error")
+
+
 # ── Form ───────────────────────────────────────────────────────────────────────
 def _render_form(clients_db: dict):
     is_editing = bool(st.session_state.get("client_form_original_contact"))
@@ -97,8 +207,8 @@ def _render_form(clients_db: dict):
             else:
                 st.session_state["client_form_company"] = ""
             # cambiar de empresa invalida cualquier edición de contacto en curso
-            st.session_state["client_form_contact"]          = ""
-            st.session_state["client_form_title"]            = ""
+            st.session_state["client_form_contact"]           = ""
+            st.session_state["client_form_title"]             = ""
             st.session_state["client_form_mobile"]            = ""
             st.session_state["client_form_email"]             = ""
             st.session_state["client_form_original_company"] = ""
@@ -130,18 +240,18 @@ def _render_form(clients_db: dict):
                 choice = st.session_state["client_contact_select"]
                 if choice != NEW_CONTACT_LABEL:
                     match = next((c for c in contacts_list if c.get("contact") == choice), None)
-                    st.session_state["client_form_contact"]           = choice
-                    st.session_state["client_form_title"]             = match.get("title", "")  if match else ""
-                    st.session_state["client_form_mobile"]            = match.get("mobile", "") if match else ""
-                    st.session_state["client_form_email"]             = match.get("email", "")  if match else ""
-                    st.session_state["client_form_original_contact"]  = choice
-                    st.session_state["client_form_original_company"]  = st.session_state.get("client_form_company", "")
+                    st.session_state["client_form_contact"]          = choice
+                    st.session_state["client_form_title"]            = match.get("title", "")  if match else ""
+                    st.session_state["client_form_mobile"]           = match.get("mobile", "") if match else ""
+                    st.session_state["client_form_email"]            = match.get("email", "")  if match else ""
+                    st.session_state["client_form_original_contact"] = choice
+                    st.session_state["client_form_original_company"] = st.session_state.get("client_form_company", "")
                 else:
-                    st.session_state["client_form_contact"]           = ""
-                    st.session_state["client_form_title"]             = ""
-                    st.session_state["client_form_mobile"]            = ""
-                    st.session_state["client_form_email"]             = ""
-                    st.session_state["client_form_original_contact"]  = ""
+                    st.session_state["client_form_contact"]          = ""
+                    st.session_state["client_form_title"]            = ""
+                    st.session_state["client_form_mobile"]           = ""
+                    st.session_state["client_form_email"]            = ""
+                    st.session_state["client_form_original_contact"] = ""
 
             st.selectbox(
                 "👤 Contact Name", contact_options, index=default_c_idx,
@@ -170,84 +280,24 @@ def _render_form(clients_db: dict):
     btn1, btn2, btn3, _ = st.columns([1.2, 1.2, 1.2, 3])
 
     with btn1:
-        if st.button("💾 Save", type="primary", disabled=not can_save, use_container_width=True):
-            try:
-                quotes_repo.create_client_company(company_val)
-                quotes_repo.update_client_contact(
-                    client=company_val,
-                    old_contact=st.session_state.get("client_form_original_contact", ""),
-                    new_contact=st.session_state.get("client_form_contact", ""),
-                    email=st.session_state.get("client_form_email", ""),
-                    title=st.session_state.get("client_form_title", ""),
-                    mobile=st.session_state.get("client_form_mobile", ""),
-                )
-                # Si el contacto se movió de empresa (edición cambió el
-                # dropdown de Company), lo quitamos de la empresa original.
-                original_company = st.session_state.get("client_form_original_company", "")
-                original_contact = st.session_state.get("client_form_original_contact", "")
-                if original_contact and original_company and original_company != company_val:
-                    quotes_repo.delete_client_contact(original_company, original_contact)
-
-                st.success(f"✅ Saved — {company_val}"
-                           + (f" / {st.session_state.get('client_form_contact')}" if st.session_state.get("client_form_contact") else ""))
-                _refresh_db()
-                _reset_form()
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Error saving: {e}")
+        st.button(
+            "💾 Save", type="primary", disabled=not can_save,
+            use_container_width=True, on_click=_handle_save,
+        )
 
     with btn2:
         if is_editing:
-            if st.button("🗑️ Delete Contact", use_container_width=True):
-                try:
-                    quotes_repo.delete_client_contact(
-                        st.session_state.get("client_form_original_company", ""),
-                        st.session_state.get("client_form_original_contact", ""),
-                    )
-                    st.success("✅ Contact deleted")
-                    _refresh_db()
-                    _reset_form()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Error deleting contact: {e}")
+            st.button(
+                "🗑️ Delete Contact", use_container_width=True,
+                on_click=_handle_delete_contact_from_form,
+            )
 
     with btn3:
         if is_editing or company_val:
-            if st.button("✖ Cancel", use_container_width=True):
-                _reset_form()
-                st.rerun()
+            st.button("✖ Cancel", use_container_width=True, on_click=_reset_form)
 
 
 # ── Browse / list ────────────────────────────────────────────────────────────
-def _render_table(contacts: list) -> str:
-    styles = """
-    <style>
-      .clients-table { width:100%; border-collapse:collapse; font-size:0.82rem;
-                        font-family:'Inter','Segoe UI',sans-serif; }
-      .clients-table thead tr { background:#1a2a3a; color:#fff; }
-      .clients-table thead th { padding:8px 12px; text-align:left;
-                                 font-weight:600; letter-spacing:.03em; }
-      .clients-table tbody tr { border-bottom:1px solid #e8e8e8; }
-      .clients-table tbody tr:nth-child(even) { background:#f7f9fb; }
-      .clients-table tbody td { padding:7px 12px; color:#2c3e50; }
-    </style>
-    """
-    header = "<thead><tr><th>Contact</th><th>Title</th><th>Mobile</th><th>Email</th></tr></thead>"
-    rows_html = ""
-    for c in contacts:
-        rows_html += (
-            "<tr>"
-            f"<td>{_html.escape(c.get('contact','') or '—')}</td>"
-            f"<td>{_html.escape(c.get('title','') or '—')}</td>"
-            f"<td>{_html.escape(c.get('mobile','') or '—')}</td>"
-            f"<td>{_html.escape(c.get('email','') or '—')}</td>"
-            "</tr>"
-        )
-    if not rows_html:
-        rows_html = "<tr><td colspan='4' style='color:#888;'>No contacts yet</td></tr>"
-    return styles + f'<table class="clients-table">{header}<tbody>{rows_html}</tbody></table>'
-
-
 def _render_browse(clients_db: dict):
     st.markdown("### 📚 Client Directory")
 
@@ -267,49 +317,75 @@ def _render_browse(clients_db: dict):
         st.caption("No companies match your search.")
         return
 
+    row_widths = [1.6, 1.7, 1.3, 2.2, 0.55, 0.55]
+
     for company in companies:
         contacts = clients_db.get(company, [])
         with st.expander(f"🏢 {company}  ·  {len(contacts)} contact(s)"):
-            st.markdown(_render_table(contacts), unsafe_allow_html=True)
 
-            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            if contacts:
+                hc1, hc2, hc3, hc4, hc5, hc6 = st.columns(row_widths)
+                hc1.markdown("**Contact**")
+                hc2.markdown("**Title**")
+                hc3.markdown("**Mobile**")
+                hc4.markdown("**Email**")
+                hc5.markdown("")
+                hc6.markdown("")
 
-            action_cols = st.columns(max(len(contacts), 1) + 2)
+                for i, c in enumerate(contacts):
+                    c1, c2, c3, c4, c5, c6 = st.columns(row_widths)
+                    c1.write(c.get("contact", "") or "—")
+                    c2.write(c.get("title", "") or "—")
+                    c3.write(c.get("mobile", "") or "—")
+                    c4.write(c.get("email", "") or "—")
+                    with c5:
+                        st.button(
+                            "✏️", key=f"edit_{company}_{i}", use_container_width=True,
+                            on_click=_start_edit, args=(company, c),
+                        )
+                    with c6:
+                        st.button(
+                            "🗑️", key=f"delcontact_{company}_{i}", use_container_width=True,
+                            on_click=_handle_delete_contact_row, args=(company, c.get("contact", "")),
+                        )
+            else:
+                st.caption("No contacts yet for this company.")
 
-            # botones de editar por contacto
-            for i, c in enumerate(contacts):
-                with action_cols[i]:
-                    if st.button(f"✏️ {c.get('contact','') or '—'}", key=f"edit_{company}_{i}", use_container_width=True):
-                        _start_edit(company, c)
-                        st.rerun()
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-            with action_cols[len(contacts)]:
-                if st.button("➕ Add contact", key=f"addcontact_{company}", use_container_width=True):
-                    _start_new_contact_for(company)
-                    st.rerun()
-
-            with action_cols[len(contacts) + 1]:
+            add_col, del_col, _ = st.columns([1.4, 1.6, 3])
+            with add_col:
+                st.button(
+                    "➕ Add contact", key=f"addcontact_{company}", use_container_width=True,
+                    on_click=_start_new_contact_for, args=(company,),
+                )
+            with del_col:
                 confirm_key = f"confirm_delete_company_{company}"
                 if st.session_state.get(confirm_key):
-                    if st.button("⚠️ Confirm delete", key=f"reallydelete_{company}", type="primary", use_container_width=True):
-                        try:
-                            quotes_repo.delete_client_company(company)
-                            st.success(f"✅ Deleted company {company}")
-                            _refresh_db()
-                            st.session_state.pop(confirm_key, None)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error deleting company: {e}")
+                    cdc1, cdc2 = st.columns(2)
+                    with cdc1:
+                        st.button(
+                            "⚠️ Confirm", key=f"reallydelete_{company}", type="primary",
+                            use_container_width=True, on_click=_handle_delete_company, args=(company,),
+                        )
+                    with cdc2:
+                        st.button(
+                            "✖", key=f"canceldelete_{company}", use_container_width=True,
+                            on_click=_cancel_delete_company, args=(company,),
+                        )
                 else:
-                    if st.button("🗑️ Delete company", key=f"deletecompany_{company}", use_container_width=True):
-                        st.session_state[confirm_key] = True
-                        st.rerun()
+                    st.button(
+                        "🗑️ Delete company", key=f"deletecompany_{company}", use_container_width=True,
+                        on_click=_ask_delete_company, args=(company,),
+                    )
 
 
 # ── Main page ──────────────────────────────────────────────────────────────────
 def show():
     st.title("👥 CLIENTS")
     st.caption("Manage your client and contact database — shared with the Quotes form.")
+
+    _show_flash()
 
     if "client_form_company" not in st.session_state:
         _reset_form()
