@@ -23,7 +23,7 @@ def _repo_base():
 # ── Carpeta base dentro del repo ────────────────────────────────────────────────
 # Todo lo relativo a esta app (Quotes/ y Clients/) cuelga de esta carpeta,
 # en vez de la raíz del repo.
-BASE_PATH = "Propiestary_tools"
+BASE_PATH = "Propietary_tools"
 
 
 # ── Leer el índice ─────────────────────────────────────────────────────────────
