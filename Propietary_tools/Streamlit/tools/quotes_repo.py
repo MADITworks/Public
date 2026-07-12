@@ -1,5 +1,6 @@
 import json
 import base64
+import pathlib
 import requests
 import streamlit as st
 from datetime import datetime
@@ -54,6 +55,8 @@ def _save_index(data: list, sha: str | None, message: str):
 
 # ── Guardar el Excel original ──────────────────────────────────────────────────
 def _upload_excel(filename: str, file_bytes: bytes):
+    """Sube el archivo original (xlsx o xls) tal cual, a {BASE_PATH}/Quotes/,
+    para poder reabrirlo/descargarlo después desde el histórico."""
     url     = f"{_repo_base()}/contents/{BASE_PATH}/Quotes/{filename}"
     content = base64.b64encode(file_bytes).decode()
     # Verificar si ya existe (para obtener sha)
@@ -109,11 +112,15 @@ def save_quote(
     file_bytes:         bytes | None = None,
     original_filename:  str = "",
     record_id:          str | None = None,
+    contact_title:      str = "",
+    contact_mobile:     str = "",
 ) -> dict:
     """
     Guarda (o actualiza, si se pasa record_id) la oferta en
     {BASE_PATH}/Quotes dentro del repo privado:
-    - Sube el Excel original a {BASE_PATH}/Quotes/ (si se provee file_bytes)
+    - Sube el Excel original a {BASE_PATH}/Quotes/ (si se provee file_bytes),
+      conservando la extensión original (.xlsx o .xls) para que quede
+      abrible/legible cuando se descargue más adelante.
     - Guarda el detalle completo (meta + items editados) en
       {BASE_PATH}/Quotes/data/{id}.json
     - Añade / actualiza la entrada en el índice
@@ -124,11 +131,14 @@ def save_quote(
     is_update = record_id is not None
     rid = record_id or datetime.now().strftime("%Y%m%d%H%M%S")
 
-    # Nombre único del archivo
+    # Nombre único del archivo — se respeta la extensión original (.xlsx / .xls)
     date_clean   = date.replace("/", "")
-    client_clean = client.replace(" ", "_").replace("/", "-")
+    client_clean = client.replace(" ", "-").replace("/", "-")
     quote_num    = meta.get("quote_number", "NOQUOTE")
-    filename     = f"{date_clean}_{client_clean}_{quote_num}.xlsx"
+    ext          = pathlib.Path(original_filename).suffix.lower() or ".xlsx"
+    if ext not in (".xlsx", ".xls"):
+        ext = ".xlsx"
+    filename     = f"{date_clean}_{client_clean}_{quote_num}{ext}"
 
     if file_bytes:
         _upload_excel(filename, file_bytes)
@@ -137,20 +147,22 @@ def save_quote(
     sell_total = round(float(cost_total / (1 - margin_pct / 100)), 2)
 
     record = {
-        "id":           rid,
-        "date":         date,
-        "client":       client,
-        "contact":      contact,
-        "email":        email,
-        "title":        title,
-        "quote_number": meta.get("quote_number", "—"),
-        "expiry":       meta.get("expiry", "—"),
-        "currency":     meta.get("currency", "AUD"),
-        "distributor":  distributor,
-        "margin_pct":   margin_pct,
-        "cost_total":   cost_total,
-        "sell_total":   sell_total,
-        "filename":     filename,   # <- enlace al Excel original, usado por download_quote_excel()
+        "id":             rid,
+        "date":           date,
+        "client":         client,
+        "contact":        contact,
+        "contact_title":  contact_title,
+        "contact_mobile": contact_mobile,
+        "email":          email,
+        "title":          title,
+        "quote_number":   meta.get("quote_number", "—"),
+        "expiry":         meta.get("expiry", "—"),
+        "currency":       meta.get("currency", "AUD"),
+        "distributor":    distributor,
+        "margin_pct":     margin_pct,
+        "cost_total":     cost_total,
+        "sell_total":     sell_total,
+        "filename":       filename,   # <- enlace al Excel original, usado por download_quote_excel()
     }
 
     # Índice (resumen)
@@ -226,18 +238,20 @@ def _save_clients_db(data: dict, sha: str | None, message: str):
 
 def load_clients_db() -> dict:
     """
-    Devuelve {client_name: [{"contact": ..., "email": ...}, ...]}.
-    Vacío si el archivo aún no existe.
+    Devuelve {client_name: [{"contact": ..., "title": ..., "mobile": ...,
+    "email": ...}, ...]}.
+    Vacío si el archivo aún no existe. Registros antiguos sin "title"/"mobile"
+    siguen funcionando (se leen como cadena vacía).
     """
     data, _ = _get_clients_db()
     return data
 
 
-def upsert_client_contact(client: str, contact: str, email: str):
+def upsert_client_contact(client: str, contact: str, email: str, title: str = "", mobile: str = ""):
     """
-    Añade el cliente/contacto si no existe, o actualiza el email si el
-    contacto ya existía con un email distinto. No falla si contact/email
-    vienen vacíos (simplemente no agrega una entrada de contacto sin nombre).
+    Añade el cliente/contacto si no existe, o actualiza título/móvil/email si el
+    contacto ya existía con datos distintos. No falla si todos los campos de
+    contacto vienen vacíos (simplemente no agrega una entrada sin nombre).
     """
     client = (client or "").strip()
     if not client:
@@ -245,6 +259,8 @@ def upsert_client_contact(client: str, contact: str, email: str):
 
     contact = (contact or "").strip()
     email   = (email or "").strip()
+    title   = (title or "").strip()
+    mobile  = (mobile or "").strip()
 
     data, sha = _get_clients_db()
     contacts = data.get(client, [])
@@ -254,11 +270,20 @@ def upsert_client_contact(client: str, contact: str, email: str):
         if c.get("contact", "").strip().lower() == contact.lower():
             if email and c.get("email") != email:
                 c["email"] = email
+            if title and c.get("title") != title:
+                c["title"] = title
+            if mobile and c.get("mobile") != mobile:
+                c["mobile"] = mobile
             found = True
             break
 
-    if not found and (contact or email):
-        contacts.append({"contact": contact, "email": email})
+    if not found and (contact or email or title or mobile):
+        contacts.append({
+            "contact": contact,
+            "email":   email,
+            "title":   title,
+            "mobile":  mobile,
+        })
 
     data[client] = contacts
     _save_clients_db(data, sha, f"Update client contacts for {client}")
