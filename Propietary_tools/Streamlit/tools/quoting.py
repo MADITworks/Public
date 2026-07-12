@@ -426,6 +426,15 @@ def render_summary_table(summary: pd.DataFrame) -> str:
     return styles + f'<table class="summary-table">{header}<tbody>{rows_html}</tbody></table>'
 
 
+# ── Misc helpers ────────────────────────────────────────────────────────────────
+def _mime_for_filename(filename: str) -> str:
+    """Devuelve el mime type correcto según la extensión real del archivo
+    (para que los botones de descarga sirvan tanto .xlsx como .xls)."""
+    if filename.lower().endswith(".xls") and not filename.lower().endswith(".xlsx"):
+        return "application/vnd.ms-excel"
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
 # ── Repository / navigation state helpers ───────────────────────────────────────
 NEW_QUOTE_STATE_KEYS = [
     "items_saved", "quote_file_id", "meta", "distributor", "edit_mode",
@@ -444,12 +453,14 @@ NEW_CONTACT_LABEL = "➕ New contact..."
 def _reset_new_quote_flow():
     for key in NEW_QUOTE_STATE_KEYS + CLIENT_FORM_WIDGET_KEYS:
         st.session_state.pop(key, None)
-    st.session_state["quote_client"]    = ""
-    st.session_state["quote_contact"]   = ""
-    st.session_state["quote_email"]     = ""
-    st.session_state["quote_title"]     = ""
-    st.session_state["quote_date_obj"]  = datetime.today().date()
-    st.session_state["margin_pct"]      = 10.0
+    st.session_state["quote_client"]         = ""
+    st.session_state["quote_contact"]        = ""
+    st.session_state["quote_contact_title"]  = ""
+    st.session_state["quote_contact_mobile"] = ""
+    st.session_state["quote_email"]          = ""
+    st.session_state["quote_title"]          = ""
+    st.session_state["quote_date_obj"]       = datetime.today().date()
+    st.session_state["margin_pct"]           = 10.0
 
 
 def _load_saved_quote(record: dict):
@@ -477,6 +488,8 @@ def _load_saved_quote(record: dict):
     st.session_state["edit_counter"]         = 0
     st.session_state["quote_client"]         = detail.get("client", "")
     st.session_state["quote_contact"]        = detail.get("contact", "")
+    st.session_state["quote_contact_title"]  = detail.get("contact_title", "")
+    st.session_state["quote_contact_mobile"] = detail.get("contact_mobile", "")
     st.session_state["quote_email"]          = detail.get("email", "")
     st.session_state["quote_title"]          = detail.get("title", "")
     st.session_state["quote_date_obj"]       = date_obj
@@ -560,7 +573,7 @@ def _show_history():
                             "⬇️ Save",
                             data=cache[rec["id"]],
                             file_name=filename,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            mime=_mime_for_filename(filename),
                             key=f"dl_{rec['id']}",
                             use_container_width=True,
                         )
@@ -598,10 +611,14 @@ def _show_new_quote():
 
     clients_db = st.session_state["clients_db"]
 
-    fc1, fc2 = st.columns(2)
+    with st.container(border=True):
+        st.markdown(
+            "<div style='font-size:0.95rem;font-weight:700;color:#1a2a3a;"
+            "letter-spacing:.02em;margin-bottom:10px;'>🏢 CLIENT &amp; CONTACT</div>",
+            unsafe_allow_html=True,
+        )
 
-    # ── Company ──────────────────────────────────────────────────────────────
-    with fc1:
+        # ── Company — full width ─────────────────────────────────────────────
         company_options = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
         current_client   = st.session_state.get("quote_client", "")
         default_idx = company_options.index(current_client) if current_client in clients_db else len(company_options) - 1
@@ -610,44 +627,66 @@ def _show_new_quote():
             choice = st.session_state["company_select"]
             st.session_state.pop("contact_select", None)
             if choice != NEW_COMPANY_LABEL:
-                st.session_state["quote_client"]  = choice
-                st.session_state["quote_contact"] = ""
-                st.session_state["quote_email"]   = ""
+                st.session_state["quote_client"]         = choice
+                st.session_state["quote_contact"]        = ""
+                st.session_state["quote_email"]          = ""
+                st.session_state["quote_contact_title"]  = ""
+                st.session_state["quote_contact_mobile"] = ""
             else:
                 st.session_state["quote_client"] = ""
 
-        st.selectbox("Company", company_options, index=default_idx, key="company_select", on_change=_on_company_change)
+        st.selectbox("🏢 Company", company_options, index=default_idx, key="company_select", on_change=_on_company_change)
 
         if st.session_state["company_select"] == NEW_COMPANY_LABEL:
             st.text_input("New company name", key="quote_client")
 
-    # ── Contact (depends on selected company) ───────────────────────────────
-    with fc2:
-        contacts_list  = clients_db.get(st.session_state.get("quote_client", ""), [])
-        contact_names  = [c.get("contact", "") for c in contacts_list if c.get("contact")]
-        contact_options = contact_names + [NEW_CONTACT_LABEL]
-        current_contact = st.session_state.get("quote_contact", "")
-        default_c_idx = contact_options.index(current_contact) if current_contact in contact_names else len(contact_options) - 1
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
-        def _on_contact_change():
-            choice = st.session_state["contact_select"]
-            if choice != NEW_CONTACT_LABEL:
-                match = next((c for c in contacts_list if c.get("contact") == choice), None)
-                st.session_state["quote_contact"] = choice
-                st.session_state["quote_email"]   = match.get("email", "") if match else ""
-            else:
-                st.session_state["quote_contact"] = ""
-                st.session_state["quote_email"]   = ""
+        # ── Contact Name / Contact Title ─────────────────────────────────────
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            contacts_list   = clients_db.get(st.session_state.get("quote_client", ""), [])
+            contact_names   = [c.get("contact", "") for c in contacts_list if c.get("contact")]
+            contact_options = contact_names + [NEW_CONTACT_LABEL]
+            current_contact = st.session_state.get("quote_contact", "")
+            default_c_idx = contact_options.index(current_contact) if current_contact in contact_names else len(contact_options) - 1
 
-        st.selectbox("Contact", contact_options, index=default_c_idx, key="contact_select", on_change=_on_contact_change)
+            def _on_contact_change():
+                choice = st.session_state["contact_select"]
+                if choice != NEW_CONTACT_LABEL:
+                    match = next((c for c in contacts_list if c.get("contact") == choice), None)
+                    st.session_state["quote_contact"]        = choice
+                    st.session_state["quote_email"]          = match.get("email", "")  if match else ""
+                    st.session_state["quote_contact_title"]  = match.get("title", "")  if match else ""
+                    st.session_state["quote_contact_mobile"] = match.get("mobile", "") if match else ""
+                else:
+                    st.session_state["quote_contact"]        = ""
+                    st.session_state["quote_email"]          = ""
+                    st.session_state["quote_contact_title"]  = ""
+                    st.session_state["quote_contact_mobile"] = ""
 
-        if st.session_state["contact_select"] == NEW_CONTACT_LABEL:
-            st.text_input("New contact name", key="quote_contact")
+            st.selectbox("👤 Contact Name", contact_options, index=default_c_idx, key="contact_select", on_change=_on_contact_change)
 
-        st.text_input("Contact email", key="quote_email")
+            if st.session_state["contact_select"] == NEW_CONTACT_LABEL:
+                st.text_input("New contact name", key="quote_contact")
 
-    st.text_input("Proposal title", key="quote_title")
-    st.date_input("Date", key="quote_date_obj", format="DD/MM/YYYY")
+        with cc2:
+            st.text_input("💼 Contact Title", key="quote_contact_title")
+
+        # ── Mobile Phone / Email ─────────────────────────────────────────────
+        cc3, cc4 = st.columns(2)
+        with cc3:
+            st.text_input("📱 Mobile Phone", key="quote_contact_mobile")
+        with cc4:
+            st.text_input("✉️ Email", key="quote_email")
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        st.text_input("📌 Proposal Title", key="quote_title")
+    with pc2:
+        st.date_input("📅 Date", key="quote_date_obj", format="DD/MM/YYYY")
 
     st.divider()
 
@@ -658,12 +697,13 @@ def _show_new_quote():
             st.caption(f"📎 Original Excel: {st.session_state.get('original_excel_name', '')}")
         with dl_col:
             original_bytes = st.session_state.get("original_excel_bytes")
+            original_name  = st.session_state.get("original_excel_name", "quote.xlsx")
             if original_bytes:
                 st.download_button(
                     "⬇️ Download",
                     data=original_bytes,
-                    file_name=st.session_state.get("original_excel_name", "quote.xlsx"),
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    file_name=original_name,
+                    mime=_mime_for_filename(original_name),
                     key="dl_loaded_original",
                     use_container_width=True,
                 )
@@ -695,6 +735,9 @@ def _show_new_quote():
                 return
 
             uploaded.seek(0)
+            # Se guarda el archivo original tal cual (bytes + nombre) para
+            # poder subirlo íntegro al repo privado al momento de "Save Quote"
+            # y así poder reabrirlo/descargarlo más adelante.
             st.session_state["original_excel_bytes"] = uploaded.read()
             st.session_state["original_excel_name"]  = uploaded.name
             st.session_state["quote_file_id"]  = file_id
@@ -734,6 +777,8 @@ def _show_new_quote():
     with st.expander("More details"):
         st.write(f"**Client:** {st.session_state.get('quote_client', '—') or '—'}")
         st.write(f"**Contact:** {st.session_state.get('quote_contact', '—') or '—'}")
+        st.write(f"**Title:** {st.session_state.get('quote_contact_title', '—') or '—'}")
+        st.write(f"**Mobile:** {st.session_state.get('quote_contact_mobile', '—') or '—'}")
         st.write(f"**Email:** {st.session_state.get('quote_email', '—') or '—'}")
         st.write(f"**Proposal title:** {st.session_state.get('quote_title', '—') or '—'}")
         st.write(f"**End User:** {meta.get('end_user', '—')}")
@@ -890,6 +935,8 @@ def _show_new_quote():
                 record = quotes_repo.save_quote(
                     client=st.session_state["quote_client"],
                     contact=st.session_state["quote_contact"],
+                    contact_title=st.session_state.get("quote_contact_title", ""),
+                    contact_mobile=st.session_state.get("quote_contact_mobile", ""),
                     email=st.session_state["quote_email"],
                     title=st.session_state["quote_title"],
                     date=st.session_state["quote_date_obj"].strftime("%d/%m/%Y"),
@@ -914,6 +961,8 @@ def _show_new_quote():
                     client=st.session_state["quote_client"],
                     contact=st.session_state["quote_contact"],
                     email=st.session_state["quote_email"],
+                    title=st.session_state.get("quote_contact_title", ""),
+                    mobile=st.session_state.get("quote_contact_mobile", ""),
                 )
                 # keep the local cache in sync so it's available immediately
                 # without another API round trip
@@ -924,7 +973,16 @@ def _show_new_quote():
                     contacts.append({
                         "contact": st.session_state["quote_contact"],
                         "email":   st.session_state["quote_email"],
+                        "title":   st.session_state.get("quote_contact_title", ""),
+                        "mobile":  st.session_state.get("quote_contact_mobile", ""),
                     })
+                elif st.session_state["quote_contact"]:
+                    for c in contacts:
+                        if c.get("contact") == st.session_state["quote_contact"]:
+                            c["email"]  = st.session_state["quote_email"]
+                            c["title"]  = st.session_state.get("quote_contact_title", "")
+                            c["mobile"] = st.session_state.get("quote_contact_mobile", "")
+                            break
             except Exception as e:
                 st.warning(f"Quote saved, but could not update the clients database: {e}")
 
