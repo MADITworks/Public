@@ -435,11 +435,15 @@ def _mime_for_filename(filename: str) -> str:
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
 # ── Repository / navigation state helpers ───────────────────────────────────────
 NEW_QUOTE_STATE_KEYS = [
     "items_saved", "quote_file_id", "meta", "distributor", "edit_mode",
     "edit_counter", "items_snapshot", "quote_saved_record", "loaded_record_id",
     "original_excel_bytes", "original_excel_name",
+    "client_step_done", "confirmed_client_info",
 ]
 
 # Selectbox keys that must be dropped whenever the underlying client/contact
@@ -461,6 +465,120 @@ def _reset_new_quote_flow():
     st.session_state["quote_title"]          = ""
     st.session_state["quote_date_obj"]       = datetime.today().date()
     st.session_state["margin_pct"]           = 10.0
+    st.session_state["client_step_done"]     = False
+
+
+def _snapshot_client_info():
+    """Congela los datos de cliente/contacto ya validados en un único dict,
+    que es la fuente de verdad para todo lo que se muestre más adelante
+    (p.ej. 'More details'), en lugar de leer los widgets en vivo."""
+    st.session_state["confirmed_client_info"] = {
+        "client":         st.session_state.get("quote_client", "").strip(),
+        "contact":        st.session_state.get("quote_contact", "").strip(),
+        "contact_title":  st.session_state.get("quote_contact_title", "").strip(),
+        "contact_mobile": st.session_state.get("quote_contact_mobile", "").strip(),
+        "email":          st.session_state.get("quote_email", "").strip(),
+        "title":          st.session_state.get("quote_title", "").strip(),
+        "date":           st.session_state.get("quote_date_obj"),
+    }
+
+
+def _validate_client_step() -> list[str]:
+    errors = []
+    if not st.session_state.get("quote_client", "").strip():
+        errors.append("Company is required.")
+    if not st.session_state.get("quote_contact", "").strip():
+        errors.append("Contact name is required.")
+    email = st.session_state.get("quote_email", "").strip()
+    if not email:
+        errors.append("Contact email is required.")
+    elif not _EMAIL_RE.match(email):
+        errors.append("Contact email doesn't look like a valid email address.")
+    if not st.session_state.get("quote_title", "").strip():
+        errors.append("Proposal title is required.")
+    return errors
+
+
+def _render_client_contact_form(clients_db: dict):
+    """Renderiza los campos de Company / Contact / Title / Mobile / Email,
+    ligados a session_state. Se usa únicamente en el Paso 1."""
+
+    with st.container(border=True):
+        hcol1, hcol2 = st.columns([5, 1.3])
+        with hcol1:
+            st.markdown(
+                "<div style='font-size:0.95rem;font-weight:700;color:#1a2a3a;"
+                "letter-spacing:.02em;margin-top:6px;'>🏢 CLIENT &amp; CONTACT</div>",
+                unsafe_allow_html=True,
+            )
+        with hcol2:
+            if st.button("🔄 Refresh clients", key="refresh_clients_db", use_container_width=True):
+                st.session_state.pop("clients_db", None)
+                st.rerun()
+
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+        # ── Company — full width ─────────────────────────────────────────────
+        company_options = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
+        current_client   = st.session_state.get("quote_client", "")
+        default_idx = company_options.index(current_client) if current_client in clients_db else len(company_options) - 1
+
+        def _on_company_change():
+            choice = st.session_state["company_select"]
+            st.session_state.pop("contact_select", None)
+            if choice != NEW_COMPANY_LABEL:
+                st.session_state["quote_client"]         = choice
+                st.session_state["quote_contact"]        = ""
+                st.session_state["quote_email"]          = ""
+                st.session_state["quote_contact_title"]  = ""
+                st.session_state["quote_contact_mobile"] = ""
+            else:
+                st.session_state["quote_client"] = ""
+
+        st.selectbox("🏢 Company", company_options, index=default_idx, key="company_select", on_change=_on_company_change)
+
+        if st.session_state["company_select"] == NEW_COMPANY_LABEL:
+            st.text_input("New company name", key="quote_client")
+
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+        # ── Contact Name / Contact Title ─────────────────────────────────────
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            contacts_list   = clients_db.get(st.session_state.get("quote_client", ""), [])
+            contact_names   = [c.get("contact", "") for c in contacts_list if c.get("contact")]
+            contact_options = contact_names + [NEW_CONTACT_LABEL]
+            current_contact = st.session_state.get("quote_contact", "")
+            default_c_idx = contact_options.index(current_contact) if current_contact in contact_names else len(contact_options) - 1
+
+            def _on_contact_change():
+                choice = st.session_state["contact_select"]
+                if choice != NEW_CONTACT_LABEL:
+                    match = next((c for c in contacts_list if c.get("contact") == choice), None)
+                    st.session_state["quote_contact"]        = choice
+                    st.session_state["quote_email"]          = match.get("email", "")  if match else ""
+                    st.session_state["quote_contact_title"]  = match.get("title", "")  if match else ""
+                    st.session_state["quote_contact_mobile"] = match.get("mobile", "") if match else ""
+                else:
+                    st.session_state["quote_contact"]        = ""
+                    st.session_state["quote_email"]          = ""
+                    st.session_state["quote_contact_title"]  = ""
+                    st.session_state["quote_contact_mobile"] = ""
+
+            st.selectbox("👤 Contact Name", contact_options, index=default_c_idx, key="contact_select", on_change=_on_contact_change)
+
+            if st.session_state["contact_select"] == NEW_CONTACT_LABEL:
+                st.text_input("New contact name", key="quote_contact")
+
+        with cc2:
+            st.text_input("💼 Contact Title", key="quote_contact_title")
+
+        # ── Mobile Phone / Email ─────────────────────────────────────────────
+        cc3, cc4 = st.columns(2)
+        with cc3:
+            st.text_input("📱 Mobile Phone", key="quote_contact_mobile")
+        with cc4:
+            st.text_input("✉️ Email", key="quote_email")
 
 
 def _load_saved_quote(record: dict):
@@ -501,6 +619,20 @@ def _load_saved_quote(record: dict):
     st.session_state["original_excel_bytes"] = excel_bytes
     st.session_state["original_excel_name"]  = detail["filename"]
     st.session_state["quote_saved_record"]   = record
+
+    # Un registro cargado desde el repositorio ya tiene cliente/contacto
+    # validados: se marca el Paso 1 como completado y se congela el
+    # snapshot que alimenta "More details", para que herede los datos.
+    st.session_state["client_step_done"] = True
+    st.session_state["confirmed_client_info"] = {
+        "client":         detail.get("client", ""),
+        "contact":        detail.get("contact", ""),
+        "contact_title":  detail.get("contact_title", ""),
+        "contact_mobile": detail.get("contact_mobile", ""),
+        "email":          detail.get("email", ""),
+        "title":          detail.get("title", ""),
+        "date":           date_obj,
+    }
 
 
 # ── Quote History ───────────────────────────────────────────────────────────────
@@ -595,19 +727,12 @@ def _show_history():
                                 st.error(f"❌ Could not download: {e}")
 
 
-# ── New Quote / View Saved Quote ────────────────────────────────────────────────
-def _show_new_quote():
+# ── Step 1: Client & Contact ─────────────────────────────────────────────────────
+def _show_client_step():
     from tools import quotes_repo
 
-    loaded_id = st.session_state.get("loaded_record_id")
-    if loaded_id:
-        st.info(
-            f"📂 Viewing saved quote: **{st.session_state.get('quote_title', '')}** "
-            f"— {st.session_state.get('quote_client', '')}"
-        )
-
-    # ── Step 1: date + client/proposal form ──────────────────────────────────
-    st.markdown("### 📝 Quote Details")
+    st.markdown("### 📝 Step 1 — Client &amp; Contact")
+    st.caption("Confirm the client and contact details before creating the quote.")
 
     if "clients_db" not in st.session_state:
         try:
@@ -618,82 +743,7 @@ def _show_new_quote():
 
     clients_db = st.session_state["clients_db"]
 
-    with st.container(border=True):
-        hcol1, hcol2 = st.columns([5, 1.3])
-        with hcol1:
-            st.markdown(
-                "<div style='font-size:0.95rem;font-weight:700;color:#1a2a3a;"
-                "letter-spacing:.02em;margin-top:6px;'>🏢 CLIENT &amp; CONTACT</div>",
-                unsafe_allow_html=True,
-            )
-        with hcol2:
-            if st.button("🔄 Refresh clients", key="refresh_clients_db", use_container_width=True):
-                st.session_state.pop("clients_db", None)
-                st.rerun()
-
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-
-        # ── Company — full width ─────────────────────────────────────────────
-        company_options = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
-        current_client   = st.session_state.get("quote_client", "")
-        default_idx = company_options.index(current_client) if current_client in clients_db else len(company_options) - 1
-
-        def _on_company_change():
-            choice = st.session_state["company_select"]
-            st.session_state.pop("contact_select", None)
-            if choice != NEW_COMPANY_LABEL:
-                st.session_state["quote_client"]         = choice
-                st.session_state["quote_contact"]        = ""
-                st.session_state["quote_email"]          = ""
-                st.session_state["quote_contact_title"]  = ""
-                st.session_state["quote_contact_mobile"] = ""
-            else:
-                st.session_state["quote_client"] = ""
-
-        st.selectbox("🏢 Company", company_options, index=default_idx, key="company_select", on_change=_on_company_change)
-
-        if st.session_state["company_select"] == NEW_COMPANY_LABEL:
-            st.text_input("New company name", key="quote_client")
-
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-
-        # ── Contact Name / Contact Title ─────────────────────────────────────
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            contacts_list   = clients_db.get(st.session_state.get("quote_client", ""), [])
-            contact_names   = [c.get("contact", "") for c in contacts_list if c.get("contact")]
-            contact_options = contact_names + [NEW_CONTACT_LABEL]
-            current_contact = st.session_state.get("quote_contact", "")
-            default_c_idx = contact_options.index(current_contact) if current_contact in contact_names else len(contact_options) - 1
-
-            def _on_contact_change():
-                choice = st.session_state["contact_select"]
-                if choice != NEW_CONTACT_LABEL:
-                    match = next((c for c in contacts_list if c.get("contact") == choice), None)
-                    st.session_state["quote_contact"]        = choice
-                    st.session_state["quote_email"]          = match.get("email", "")  if match else ""
-                    st.session_state["quote_contact_title"]  = match.get("title", "")  if match else ""
-                    st.session_state["quote_contact_mobile"] = match.get("mobile", "") if match else ""
-                else:
-                    st.session_state["quote_contact"]        = ""
-                    st.session_state["quote_email"]          = ""
-                    st.session_state["quote_contact_title"]  = ""
-                    st.session_state["quote_contact_mobile"] = ""
-
-            st.selectbox("👤 Contact Name", contact_options, index=default_c_idx, key="contact_select", on_change=_on_contact_change)
-
-            if st.session_state["contact_select"] == NEW_CONTACT_LABEL:
-                st.text_input("New contact name", key="quote_contact")
-
-        with cc2:
-            st.text_input("💼 Contact Title", key="quote_contact_title")
-
-        # ── Mobile Phone / Email ─────────────────────────────────────────────
-        cc3, cc4 = st.columns(2)
-        with cc3:
-            st.text_input("📱 Mobile Phone", key="quote_contact_mobile")
-        with cc4:
-            st.text_input("✉️ Email", key="quote_email")
+    _render_client_contact_form(clients_db)
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
@@ -702,6 +752,55 @@ def _show_new_quote():
         st.text_input("📌 Proposal Title", key="quote_title")
     with pc2:
         st.date_input("📅 Date", key="quote_date_obj", format="DD/MM/YYYY")
+
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+
+    _, col_btn = st.columns([4, 1.3])
+    with col_btn:
+        continue_clicked = st.button("Continue to Quote →", type="primary", use_container_width=True)
+
+    if continue_clicked:
+        errors = _validate_client_step()
+        if errors:
+            for e in errors:
+                st.error(f"⚠️ {e}")
+        else:
+            _snapshot_client_info()
+            st.session_state["client_step_done"] = True
+            st.rerun()
+
+
+# ── New Quote / View Saved Quote ────────────────────────────────────────────────
+def _show_new_quote():
+    from tools import quotes_repo
+
+    loaded_id = st.session_state.get("loaded_record_id")
+
+    # ── Gate: el Paso 1 (Cliente/Contacto) debe estar validado antes de
+    # continuar. Si estamos viendo una quote ya guardada, ese paso ya
+    # quedó resuelto en _load_saved_quote().
+    if not st.session_state.get("client_step_done") and not loaded_id:
+        _show_client_step()
+        return
+
+    info = st.session_state.get("confirmed_client_info", {})
+
+    if loaded_id:
+        st.info(
+            f"📂 Viewing saved quote: **{st.session_state.get('quote_title', '')}** "
+            f"— {st.session_state.get('quote_client', '')}"
+        )
+    else:
+        summary_col, edit_col = st.columns([5, 1.3])
+        with summary_col:
+            st.markdown(
+                f"**🏢 {info.get('client') or '—'}**  ·  👤 {info.get('contact') or '—'}"
+                f"  ·  ✉️ {info.get('email') or '—'}  ·  📌 {info.get('title') or '—'}"
+            )
+        with edit_col:
+            if st.button("✏️ Edit client/contact", use_container_width=True):
+                st.session_state["client_step_done"] = False
+                st.rerun()
 
     st.divider()
 
@@ -791,12 +890,17 @@ def _show_new_quote():
     col3.metric("Currency", meta.get("currency",      "AUD"))
 
     with st.expander("More details"):
-        st.write(f"**Client:** {st.session_state.get('quote_client', '—') or '—'}")
-        st.write(f"**Contact:** {st.session_state.get('quote_contact', '—') or '—'}")
-        st.write(f"**Title:** {st.session_state.get('quote_contact_title', '—') or '—'}")
-        st.write(f"**Mobile:** {st.session_state.get('quote_contact_mobile', '—') or '—'}")
-        st.write(f"**Email:** {st.session_state.get('quote_email', '—') or '—'}")
-        st.write(f"**Proposal title:** {st.session_state.get('quote_title', '—') or '—'}")
+        # Se lee siempre del snapshot congelado en el Paso 1 (o del detalle
+        # de la quote guardada), en vez de los widgets en vivo, para que
+        # estos datos siempre hereden correctamente lo introducido en
+        # Cliente/Contacto.
+        info = st.session_state.get("confirmed_client_info", {})
+        st.write(f"**Client:** {info.get('client') or '—'}")
+        st.write(f"**Contact:** {info.get('contact') or '—'}")
+        st.write(f"**Title:** {info.get('contact_title') or '—'}")
+        st.write(f"**Mobile:** {info.get('contact_mobile') or '—'}")
+        st.write(f"**Email:** {info.get('email') or '—'}")
+        st.write(f"**Proposal title:** {info.get('title') or '—'}")
         st.write(f"**End User:** {meta.get('end_user', '—')}")
         if distributor == "NEXTGEN":
             st.write(f"**Description:** {meta.get('description', '—')}")
@@ -971,6 +1075,9 @@ def _show_new_quote():
         if record:
             st.session_state["quote_saved_record"] = record
             st.session_state["loaded_record_id"]   = record["id"]
+            # Refresca también el snapshot usado por "More details" con lo
+            # que realmente se acaba de guardar.
+            _snapshot_client_info()
 
             try:
                 quotes_repo.upsert_client_contact(
