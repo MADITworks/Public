@@ -337,3 +337,109 @@ def upsert_client_contact(client: str, contact: str, email: str, title: str = ""
 
     data[client] = contacts
     _save_clients_db(data, sha, f"Update client contacts for {client}")
+
+
+# ── CRUD adicional para la página de administración de clientes (Clients.py) ──
+def create_client_company(client: str):
+    """Crea una empresa vacía (sin contactos todavía) si aún no existe."""
+    client = (client or "").strip()
+    if not client:
+        return
+    data, sha = _get_clients_db()
+    if client not in data:
+        data[client] = []
+        _save_clients_db(data, sha, f"Create client company {client}")
+
+
+def rename_client_company(old_name: str, new_name: str):
+    """Renombra una empresa. Si ya existe una empresa con el nuevo nombre,
+    fusiona los contactos (evitando duplicados por nombre de contacto)."""
+    old_name = (old_name or "").strip()
+    new_name = (new_name or "").strip()
+    if not old_name or not new_name or old_name == new_name:
+        return
+
+    data, sha = _get_clients_db()
+    if old_name not in data:
+        return
+
+    contacts = data.pop(old_name)
+    existing = data.get(new_name, [])
+    existing_names = {c.get("contact", "").strip().lower() for c in existing}
+    for c in contacts:
+        if c.get("contact", "").strip().lower() not in existing_names:
+            existing.append(c)
+    data[new_name] = existing
+    _save_clients_db(data, sha, f"Rename client company {old_name} -> {new_name}")
+
+
+def delete_client_company(client: str):
+    """Borra una empresa completa junto con todos sus contactos."""
+    client = (client or "").strip()
+    data, sha = _get_clients_db()
+    if client in data:
+        del data[client]
+        _save_clients_db(data, sha, f"Delete client company {client}")
+
+
+def delete_client_contact(client: str, contact: str):
+    """Borra un contacto específico dentro de una empresa (la empresa
+    permanece, aunque quede sin contactos)."""
+    client  = (client or "").strip()
+    contact = (contact or "").strip()
+    data, sha = _get_clients_db()
+    contacts = data.get(client, [])
+    new_contacts = [c for c in contacts if c.get("contact", "").strip().lower() != contact.lower()]
+    if len(new_contacts) != len(contacts):
+        data[client] = new_contacts
+        _save_clients_db(data, sha, f"Delete contact {contact} from {client}")
+
+
+def update_client_contact(
+    client:      str,
+    old_contact: str,
+    new_contact: str,
+    email:       str = "",
+    title:       str = "",
+    mobile:      str = "",
+):
+    """
+    Crea o actualiza (incluyendo renombrar) un contacto dentro de una empresa.
+    - Si 'old_contact' viene vacío -> se trata como contacto nuevo.
+    - Si 'old_contact' viene lleno -> busca ese contacto y lo actualiza,
+      incluyendo el posible cambio de nombre a 'new_contact'.
+    """
+    client = (client or "").strip()
+    if not client:
+        return
+
+    old_contact = (old_contact or "").strip()
+    new_contact = (new_contact or "").strip()
+    email       = (email or "").strip()
+    title       = (title or "").strip()
+    mobile      = (mobile or "").strip()
+
+    data, sha = _get_clients_db()
+    contacts = data.get(client, [])
+
+    updated = False
+    if old_contact:
+        for c in contacts:
+            if c.get("contact", "").strip().lower() == old_contact.lower():
+                c["contact"] = new_contact or old_contact
+                c["email"]   = email
+                c["title"]   = title
+                c["mobile"]  = mobile
+                updated = True
+                break
+
+    if not updated and (new_contact or email or title or mobile):
+        contacts.append({
+            "contact": new_contact,
+            "email":   email,
+            "title":   title,
+            "mobile":  mobile,
+        })
+
+    data[client] = contacts
+    _save_clients_db(data, sha, f"Update contact for {client}")
