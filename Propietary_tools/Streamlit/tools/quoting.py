@@ -467,8 +467,12 @@ def _load_saved_quote(record: dict):
     from tools import quotes_repo
 
     with st.spinner("Loading saved quote..."):
-        detail      = quotes_repo.load_quote_detail(record["id"])
-        excel_bytes = quotes_repo.download_quote_excel(detail["filename"])
+        # Se pasa el registro completo (no solo el id) porque el detalle y el
+        # excel ahora pueden vivir en una carpeta por cliente; el registro
+        # trae 'detail_path'/'excel_path' (o cae a la ruta plana antigua si
+        # es una quote guardada antes de esta reorganización).
+        detail      = quotes_repo.load_quote_detail(record)
+        excel_bytes = quotes_repo.download_quote_excel(detail)
 
     for key in CLIENT_FORM_WIDGET_KEYS:
         st.session_state.pop(key, None)
@@ -581,7 +585,10 @@ def _show_history():
                         if st.button("⬇️ File", key=f"prep_{rec['id']}", use_container_width=True):
                             try:
                                 with st.spinner("Fetching file..."):
-                                    file_bytes = quotes_repo.download_quote_excel(filename)
+                                    # Se pasa el registro completo (rec), no solo el
+                                    # filename, porque el archivo ahora puede vivir
+                                    # dentro de la carpeta del cliente.
+                                    file_bytes = quotes_repo.download_quote_excel(rec)
                                 cache[rec["id"]] = file_bytes
                                 st.rerun()
                             except Exception as e:
@@ -736,8 +743,9 @@ def _show_new_quote():
 
             uploaded.seek(0)
             # Se guarda el archivo original tal cual (bytes + nombre) para
-            # poder subirlo íntegro al repo privado al momento de "Save Quote"
-            # y así poder reabrirlo/descargarlo más adelante.
+            # poder subirlo íntegro a la carpeta del cliente en el repo
+            # privado al momento de "Save Quote", y así poder reabrirlo /
+            # descargarlo más adelante.
             st.session_state["original_excel_bytes"] = uploaded.read()
             st.session_state["original_excel_name"]  = uploaded.name
             st.session_state["quote_file_id"]  = file_id
