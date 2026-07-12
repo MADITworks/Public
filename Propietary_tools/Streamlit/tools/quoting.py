@@ -453,9 +453,6 @@ NEW_CONTACT_LABEL = "➕ New contact..."
 def _reset_new_quote_flow():
     for key in NEW_QUOTE_STATE_KEYS + CLIENT_FORM_WIDGET_KEYS:
         st.session_state.pop(key, None)
-    # Recarga la base de clientes por si se creó/editó algo desde la
-    # página de Clients desde la última vez que se abrió esta.
-    st.session_state.pop("clients_db", None)
     st.session_state["quote_client"]         = ""
     st.session_state["quote_contact"]        = ""
     st.session_state["quote_contact_title"]  = ""
@@ -464,7 +461,6 @@ def _reset_new_quote_flow():
     st.session_state["quote_title"]          = ""
     st.session_state["quote_date_obj"]       = datetime.today().date()
     st.session_state["margin_pct"]           = 10.0
-    st.session_state["client_data_confirmed"] = False
 
 
 def _load_saved_quote(record: dict):
@@ -622,138 +618,90 @@ def _show_new_quote():
 
     clients_db = st.session_state["clients_db"]
 
-    if not st.session_state.get("client_data_confirmed", False):
-        # ── Editable form ──────────────────────────────────────────────────────
-        with st.container(border=True):
-            hcol1, hcol2 = st.columns([5, 1.3])
-            with hcol1:
-                st.markdown(
-                    "<div style='font-size:0.95rem;font-weight:700;color:#1a2a3a;"
-                    "letter-spacing:.02em;margin-top:6px;'>🏢 CLIENT &amp; CONTACT</div>",
-                    unsafe_allow_html=True,
-                )
-            with hcol2:
-                if st.button("🔄 Refresh clients", key="refresh_clients_db", use_container_width=True):
-                    st.session_state.pop("clients_db", None)
-                    st.rerun()
-
-            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-
-            # ── Company — full width ─────────────────────────────────────────────
-            company_options = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
-            current_client   = st.session_state.get("quote_client", "")
-            default_idx = company_options.index(current_client) if current_client in clients_db else len(company_options) - 1
-
-            def _on_company_change():
-                choice = st.session_state["company_select"]
-                st.session_state.pop("contact_select", None)
-                if choice != NEW_COMPANY_LABEL:
-                    st.session_state["quote_client"]         = choice
-                    st.session_state["quote_contact"]        = ""
-                    st.session_state["quote_email"]          = ""
-                    st.session_state["quote_contact_title"]  = ""
-                    st.session_state["quote_contact_mobile"] = ""
-                else:
-                    st.session_state["quote_client"] = ""
-
-            st.selectbox("🏢 Company", company_options, index=default_idx, key="company_select", on_change=_on_company_change)
-
-            if st.session_state["company_select"] == NEW_COMPANY_LABEL:
-                st.text_input("New company name", key="quote_client")
-
-            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-
-            # ── Contact Name / Contact Title ─────────────────────────────────────
-            cc1, cc2 = st.columns(2)
-            with cc1:
-                contacts_list   = clients_db.get(st.session_state.get("quote_client", ""), [])
-                contact_names   = [c.get("contact", "") for c in contacts_list if c.get("contact")]
-                contact_options = contact_names + [NEW_CONTACT_LABEL]
-                current_contact = st.session_state.get("quote_contact", "")
-                default_c_idx = contact_options.index(current_contact) if current_contact in contact_names else len(contact_options) - 1
-
-                def _on_contact_change():
-                    choice = st.session_state["contact_select"]
-                    if choice != NEW_CONTACT_LABEL:
-                        match = next((c for c in contacts_list if c.get("contact") == choice), None)
-                        st.session_state["quote_contact"]        = choice
-                        st.session_state["quote_email"]          = match.get("email", "")  if match else ""
-                        st.session_state["quote_contact_title"]  = match.get("title", "")  if match else ""
-                        st.session_state["quote_contact_mobile"] = match.get("mobile", "") if match else ""
-                    else:
-                        st.session_state["quote_contact"]        = ""
-                        st.session_state["quote_email"]          = ""
-                        st.session_state["quote_contact_title"]  = ""
-                        st.session_state["quote_contact_mobile"] = ""
-
-                st.selectbox("👤 Contact Name", contact_options, index=default_c_idx, key="contact_select", on_change=_on_contact_change)
-
-                if st.session_state["contact_select"] == NEW_CONTACT_LABEL:
-                    st.text_input("New contact name", key="quote_contact")
-
-            with cc2:
-                st.text_input("💼 Contact Title", key="quote_contact_title")
-
-            # ── Mobile Phone / Email ─────────────────────────────────────────────
-            cc3, cc4 = st.columns(2)
-            with cc3:
-                st.text_input("📱 Mobile Phone", key="quote_contact_mobile")
-            with cc4:
-                st.text_input("✉️ Email", key="quote_email")
-
-        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-
-        pc1, pc2 = st.columns(2)
-        with pc1:
-            st.text_input("📌 Proposal Title", key="quote_title")
-        with pc2:
-            st.date_input("📅 Date", key="quote_date_obj", format="DD/MM/YYYY")
-
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-
-        can_confirm = bool(st.session_state.get("quote_client", "").strip()) and bool(st.session_state.get("quote_title", "").strip())
-        if not can_confirm:
-            st.warning("Fill in at least **Company** and **Proposal Title** to confirm.")
-
-        if st.button("✅ Confirm Quote Details", type="primary", disabled=not can_confirm):
-            st.session_state["client_data_confirmed"] = True
-            st.rerun()
-
-        # No seguimos a la subida del Excel / items hasta confirmar los datos.
-        return
-
-    # ── Datos confirmados: resumen de solo lectura + botón para editar ─────────
     with st.container(border=True):
         hcol1, hcol2 = st.columns([5, 1.3])
         with hcol1:
             st.markdown(
                 "<div style='font-size:0.95rem;font-weight:700;color:#1a2a3a;"
-                "letter-spacing:.02em;margin-top:6px;'>✅ CLIENT &amp; CONTACT — Confirmed</div>",
+                "letter-spacing:.02em;margin-top:6px;'>🏢 CLIENT &amp; CONTACT</div>",
                 unsafe_allow_html=True,
             )
         with hcol2:
-            if st.button("✏️ Edit", key="edit_client_data", use_container_width=True):
-                st.session_state["client_data_confirmed"] = False
+            if st.button("🔄 Refresh clients", key="refresh_clients_db", use_container_width=True):
+                st.session_state.pop("clients_db", None)
                 st.rerun()
 
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
-        try:
-            date_display = st.session_state.get("quote_date_obj").strftime("%d/%m/%Y")
-        except Exception:
-            date_display = "—"
+        # ── Company — full width ─────────────────────────────────────────────
+        company_options = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
+        current_client   = st.session_state.get("quote_client", "")
+        default_idx = company_options.index(current_client) if current_client in clients_db else len(company_options) - 1
 
-        sc1, sc2, sc3 = st.columns(3)
-        with sc1:
-            st.markdown(f"🏢 **Company**\n\n{st.session_state.get('quote_client', '') or '—'}")
-            st.markdown(f"📌 **Proposal Title**\n\n{st.session_state.get('quote_title', '') or '—'}")
-        with sc2:
-            st.markdown(f"👤 **Contact**\n\n{st.session_state.get('quote_contact', '') or '—'}")
-            st.markdown(f"💼 **Title**\n\n{st.session_state.get('quote_contact_title', '') or '—'}")
-        with sc3:
-            st.markdown(f"📱 **Mobile**\n\n{st.session_state.get('quote_contact_mobile', '') or '—'}")
-            st.markdown(f"✉️ **Email**\n\n{st.session_state.get('quote_email', '') or '—'}")
-        st.markdown(f"📅 **Date:** {date_display}")
+        def _on_company_change():
+            choice = st.session_state["company_select"]
+            st.session_state.pop("contact_select", None)
+            if choice != NEW_COMPANY_LABEL:
+                st.session_state["quote_client"]         = choice
+                st.session_state["quote_contact"]        = ""
+                st.session_state["quote_email"]          = ""
+                st.session_state["quote_contact_title"]  = ""
+                st.session_state["quote_contact_mobile"] = ""
+            else:
+                st.session_state["quote_client"] = ""
+
+        st.selectbox("🏢 Company", company_options, index=default_idx, key="company_select", on_change=_on_company_change)
+
+        if st.session_state["company_select"] == NEW_COMPANY_LABEL:
+            st.text_input("New company name", key="quote_client")
+
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+        # ── Contact Name / Contact Title ─────────────────────────────────────
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            contacts_list   = clients_db.get(st.session_state.get("quote_client", ""), [])
+            contact_names   = [c.get("contact", "") for c in contacts_list if c.get("contact")]
+            contact_options = contact_names + [NEW_CONTACT_LABEL]
+            current_contact = st.session_state.get("quote_contact", "")
+            default_c_idx = contact_options.index(current_contact) if current_contact in contact_names else len(contact_options) - 1
+
+            def _on_contact_change():
+                choice = st.session_state["contact_select"]
+                if choice != NEW_CONTACT_LABEL:
+                    match = next((c for c in contacts_list if c.get("contact") == choice), None)
+                    st.session_state["quote_contact"]        = choice
+                    st.session_state["quote_email"]          = match.get("email", "")  if match else ""
+                    st.session_state["quote_contact_title"]  = match.get("title", "")  if match else ""
+                    st.session_state["quote_contact_mobile"] = match.get("mobile", "") if match else ""
+                else:
+                    st.session_state["quote_contact"]        = ""
+                    st.session_state["quote_email"]          = ""
+                    st.session_state["quote_contact_title"]  = ""
+                    st.session_state["quote_contact_mobile"] = ""
+
+            st.selectbox("👤 Contact Name", contact_options, index=default_c_idx, key="contact_select", on_change=_on_contact_change)
+
+            if st.session_state["contact_select"] == NEW_CONTACT_LABEL:
+                st.text_input("New contact name", key="quote_contact")
+
+        with cc2:
+            st.text_input("💼 Contact Title", key="quote_contact_title")
+
+        # ── Mobile Phone / Email ─────────────────────────────────────────────
+        cc3, cc4 = st.columns(2)
+        with cc3:
+            st.text_input("📱 Mobile Phone", key="quote_contact_mobile")
+        with cc4:
+            st.text_input("✉️ Email", key="quote_email")
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        st.text_input("📌 Proposal Title", key="quote_title")
+    with pc2:
+        st.date_input("📅 Date", key="quote_date_obj", format="DD/MM/YYYY")
 
     st.divider()
 
