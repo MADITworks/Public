@@ -1,6 +1,8 @@
 import streamlit as st
 import requests
 import base64
+import json
+import pathlib
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlencode
 
@@ -11,6 +13,15 @@ SCOPES         = "openid profile email accounting.invoices accounting.contacts a
 
 BRANDING_THEME_NAME = "MAD IT WORKS RESELLER"
 ITEM_CODE = "MADITworks - PROD"
+
+# El link "Connect to Xero" abre en una pestaña nueva (target="_blank"), así
+# que cuando Xero redirige de vuelta con ?code=...&state=xero_connect, esa
+# redirección aterriza en una sesión de Streamlit totalmente distinta a la
+# pestaña original donde el usuario espera y pulsa "verify". session_state
+# no se comparte entre sesiones, así que usamos un archivo en /tmp (que sí
+# es compartido dentro del mismo contenedor/proceso) como puente entre la
+# pestaña del callback y la pestaña original.
+TOKEN_FILE = pathlib.Path("/tmp/xero_tokens.json")
 
 
 def get_auth_url() -> str:
@@ -100,6 +111,10 @@ def is_connected() -> bool:
 
 
 def handle_callback() -> bool:
+    """Se debe llamar al inicio de la app (antes de renderizar nada) en
+    CADA página, porque el redirect de Xero puede aterrizar en cualquier
+    pestaña/sesión — normalmente la pestaña nueva abierta por el link
+    "Connect to Xero" (target="_blank")."""
     params = st.query_params
     if params.get("state") != "xero_connect" or "code" not in params:
         return False
@@ -107,6 +122,18 @@ def handle_callback() -> bool:
     try:
         tokens = exchange_code(code)
         st.session_state["xero_tokens"] = tokens
+
+        # Puente entre sesiones: esta pestaña (la del callback) escribe el
+        # token en disco para que la pestaña original, donde el usuario
+        # pulsa "I've connected — verify", pueda recogerlo.
+        try:
+            TOKEN_FILE.write_text(json.dumps(tokens))
+        except Exception:
+            # No bloquear el flujo si por lo que sea no se puede escribir
+            # el archivo (p.ej. permisos); la sesión del callback igual
+            # queda conectada.
+            pass
+
         st.query_params.clear()
         st.rerun()
         return True
