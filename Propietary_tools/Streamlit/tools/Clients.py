@@ -5,12 +5,24 @@ from tools import quotes_repo
 NEW_COMPANY_LABEL = "➕ New company..."
 NEW_CONTACT_LABEL = "➕ New contact..."
 
-FORM_KEYS = [
-    "client_form_company", "client_form_contact", "client_form_title",
-    "client_form_mobile", "client_form_email",
-    "client_form_original_company", "client_form_original_contact",
+# "Seed" values: only used to compute the default index the FIRST time a
+# widget is rendered after starting an edit / new-contact / reset. Plain
+# session_state, never a widget's own key.
+SEED_KEYS = [
+    "cf_seed_company", "cf_seed_contact",
+    "cf_original_company", "cf_original_contact",
 ]
-FORM_WIDGET_KEYS = ["client_company_select", "client_contact_select"]
+
+# Actual widget keys + internal "last seen" trackers. These get dropped
+# whenever we want the form to fully re-initialize (start edit, new contact,
+# reset), so the widgets pick their defaults up fresh from the SEED_KEYS
+# above instead of keeping stale values.
+WIDGET_KEYS = [
+    "cf_company_select", "cf_company_new",
+    "cf_contact_select", "cf_contact_new",
+    "cf_title", "cf_mobile", "cf_email",
+    "_cf_last_seen_company", "_cf_last_seen_contact",
+]
 
 
 # ── Flash messages ──────────────────────────────────────────────────────────────
@@ -43,55 +55,60 @@ def _refresh_db():
     st.session_state.pop("clients_db_page", None)
 
 
-# ── Form state helpers (todas se usan SOLO como on_click callbacks) ────────────
+# ── Form state helpers (se usan SOLO como on_click callbacks de botones —
+# nunca como on_change de un selectbox, que es lo que causaba el KeyError) ──
 def _reset_form():
-    for key in FORM_KEYS + FORM_WIDGET_KEYS:
+    for key in SEED_KEYS + WIDGET_KEYS:
         st.session_state.pop(key, None)
-    st.session_state["client_form_company"]            = ""
-    st.session_state["client_form_contact"]             = ""
-    st.session_state["client_form_title"]               = ""
-    st.session_state["client_form_mobile"]              = ""
-    st.session_state["client_form_email"]               = ""
-    st.session_state["client_form_original_company"]    = ""
-    st.session_state["client_form_original_contact"]    = ""
+    st.session_state["cf_seed_company"]      = ""
+    st.session_state["cf_seed_contact"]      = ""
+    st.session_state["cf_original_company"]  = ""
+    st.session_state["cf_original_contact"]  = ""
 
 
 def _start_edit(company: str, contact: dict):
     """Carga el formulario con los datos de un contacto existente para editarlo."""
-    for key in FORM_WIDGET_KEYS:
+    for key in WIDGET_KEYS:
         st.session_state.pop(key, None)
-    st.session_state["client_form_company"]         = company
-    st.session_state["client_form_contact"]          = contact.get("contact", "")
-    st.session_state["client_form_title"]            = contact.get("title", "")
-    st.session_state["client_form_mobile"]           = contact.get("mobile", "")
-    st.session_state["client_form_email"]            = contact.get("email", "")
-    st.session_state["client_form_original_company"] = company
-    st.session_state["client_form_original_contact"] = contact.get("contact", "")
+    st.session_state["cf_seed_company"]     = company
+    st.session_state["cf_seed_contact"]     = contact.get("contact", "")
+    st.session_state["cf_original_company"] = company
+    st.session_state["cf_original_contact"] = contact.get("contact", "")
 
 
 def _start_new_contact_for(company: str):
     """Prepara el formulario para agregar un contacto nuevo a una empresa existente."""
-    for key in FORM_WIDGET_KEYS:
+    for key in WIDGET_KEYS:
         st.session_state.pop(key, None)
-    st.session_state["client_form_company"]         = company
-    st.session_state["client_form_contact"]          = ""
-    st.session_state["client_form_title"]            = ""
-    st.session_state["client_form_mobile"]           = ""
-    st.session_state["client_form_email"]            = ""
-    st.session_state["client_form_original_company"] = ""
-    st.session_state["client_form_original_contact"] = ""
+    st.session_state["cf_seed_company"]     = company
+    st.session_state["cf_seed_contact"]     = ""
+    st.session_state["cf_original_company"] = ""
+    st.session_state["cf_original_contact"] = ""
 
 
-# ── Acciones (on_click callbacks) ───────────────────────────────────────────────
+# ── Acciones (on_click callbacks de botones) ─────────────────────────────────
+# Estas SÍ son seguras como callbacks: solo LEEN valores de widgets que ya
+# terminaron de renderizarse en este mismo run (el botón siempre va después
+# de los campos en la página), nunca escriben la clave de un widget que
+# todavía se está construyendo.
 def _handle_save():
-    company_val = st.session_state.get("client_form_company", "").strip()
+    company_choice = st.session_state.get("cf_company_select", NEW_COMPANY_LABEL)
+    company_val = (
+        st.session_state.get("cf_company_new", "").strip()
+        if company_choice == NEW_COMPANY_LABEL else company_choice
+    )
     if not company_val:
         _flash("Company is required.", "error")
         return
 
-    contact_val       = st.session_state.get("client_form_contact", "").strip()
-    original_contact  = st.session_state.get("client_form_original_contact", "").strip()
-    original_company  = st.session_state.get("client_form_original_company", "").strip()
+    contact_choice = st.session_state.get("cf_contact_select", NEW_CONTACT_LABEL)
+    contact_val = (
+        st.session_state.get("cf_contact_new", "").strip()
+        if contact_choice == NEW_CONTACT_LABEL else contact_choice
+    )
+
+    original_contact = st.session_state.get("cf_original_contact", "").strip()
+    original_company = st.session_state.get("cf_original_company", "").strip()
 
     try:
         quotes_repo.create_client_company(company_val)
@@ -114,9 +131,9 @@ def _handle_save():
             client=company_val,
             old_contact=effective_old_contact,
             new_contact=contact_val,
-            email=st.session_state.get("client_form_email", ""),
-            title=st.session_state.get("client_form_title", ""),
-            mobile=st.session_state.get("client_form_mobile", ""),
+            email=st.session_state.get("cf_email", "").strip(),
+            title=st.session_state.get("cf_title", "").strip(),
+            mobile=st.session_state.get("cf_mobile", "").strip(),
         )
 
         # Si el contacto se movió de empresa (se editó y se cambió el
@@ -132,8 +149,8 @@ def _handle_save():
 
 
 def _handle_delete_contact_from_form():
-    company = st.session_state.get("client_form_original_company", "")
-    contact = st.session_state.get("client_form_original_contact", "")
+    company = st.session_state.get("cf_original_company", "")
+    contact = st.session_state.get("cf_original_contact", "")
     try:
         quotes_repo.delete_client_contact(company, contact)
         _flash(f"✅ Contact deleted: {contact}")
@@ -150,8 +167,8 @@ def _handle_delete_contact_row(company: str, contact_name: str):
         _refresh_db()
         # si justo ese contacto estaba cargado en el formulario, lo limpiamos
         if (
-            st.session_state.get("client_form_original_company") == company
-            and st.session_state.get("client_form_original_contact") == contact_name
+            st.session_state.get("cf_original_company") == company
+            and st.session_state.get("cf_original_contact") == contact_name
         ):
             _reset_form()
     except Exception as e:
@@ -172,7 +189,7 @@ def _handle_delete_company(company: str):
         _flash(f"✅ Deleted company {company}")
         _refresh_db()
         st.session_state.pop(f"confirm_delete_company_{company}", None)
-        if st.session_state.get("client_form_company") == company:
+        if st.session_state.get("cf_original_company") == company:
             _reset_form()
     except Exception as e:
         _flash(f"❌ Error deleting company: {e}", "error")
@@ -180,7 +197,7 @@ def _handle_delete_company(company: str):
 
 # ── Form ───────────────────────────────────────────────────────────────────────
 def _render_form(clients_db: dict):
-    is_editing = bool(st.session_state.get("client_form_original_contact"))
+    is_editing = bool(st.session_state.get("cf_original_contact"))
     heading = "✏️ EDIT CONTACT" if is_editing else "➕ NEW CLIENT / CONTACT"
 
     with st.container(border=True):
@@ -192,88 +209,108 @@ def _render_form(clients_db: dict):
 
         # ── Company ──────────────────────────────────────────────────────────
         company_options = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
-        current_company = st.session_state.get("client_form_company", "")
+        seed_company = st.session_state.get("cf_seed_company", "")
         default_idx = (
-            company_options.index(current_company)
-            if current_company in clients_db
+            company_options.index(seed_company)
+            if seed_company in clients_db
             else len(company_options) - 1
         )
 
-        def _on_company_change():
-            choice = st.session_state["client_company_select"]
-            st.session_state.pop("client_contact_select", None)
-            if choice != NEW_COMPANY_LABEL:
-                st.session_state["client_form_company"] = choice
-            else:
-                st.session_state["client_form_company"] = ""
-            # cambiar de empresa invalida cualquier edición de contacto en curso
-            st.session_state["client_form_contact"]           = ""
-            st.session_state["client_form_title"]             = ""
-            st.session_state["client_form_mobile"]            = ""
-            st.session_state["client_form_email"]             = ""
-            st.session_state["client_form_original_company"] = ""
-            st.session_state["client_form_original_contact"] = ""
+        st.selectbox("🏢 Company", company_options, index=default_idx, key="cf_company_select")
+        company_choice = st.session_state["cf_company_select"]
 
-        st.selectbox(
-            "🏢 Company", company_options, index=default_idx,
-            key="client_company_select", on_change=_on_company_change,
-        )
-        if st.session_state["client_company_select"] == NEW_COMPANY_LABEL:
-            st.text_input("New company name", key="client_form_company")
+        if company_choice == NEW_COMPANY_LABEL:
+            st.text_input(
+                "New company name",
+                key="cf_company_new",
+                value=st.session_state.get(
+                    "cf_company_new",
+                    seed_company if seed_company not in clients_db else "",
+                ),
+            )
+            company_value = st.session_state.get("cf_company_new", "").strip()
+        else:
+            company_value = company_choice
+
+        # Si la empresa efectiva cambió desde el último render, el contacto
+        # elegido ya no aplica → se limpia ANTES de dibujar el selectbox de
+        # contacto (comparación simple top-a-abajo, sin callbacks, así que
+        # no hay ninguna condición de carrera posible).
+        if st.session_state.get("_cf_last_seen_company") != company_value:
+            st.session_state.pop("cf_contact_select", None)
+            st.session_state.pop("cf_contact_new", None)
+            st.session_state.pop("cf_title", None)
+            st.session_state.pop("cf_mobile", None)
+            st.session_state.pop("cf_email", None)
+            st.session_state["_cf_last_seen_company"] = company_value
 
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
         # ── Contact Name / Contact Title ────────────────────────────────────
         cc1, cc2 = st.columns(2)
         with cc1:
-            contacts_list   = clients_db.get(st.session_state.get("client_form_company", ""), [])
+            contacts_list   = clients_db.get(company_value, [])
             contact_names   = [c.get("contact", "") for c in contacts_list if c.get("contact")]
             contact_options = contact_names + [NEW_CONTACT_LABEL]
-            current_contact = st.session_state.get("client_form_contact", "")
-            default_c_idx = (
-                contact_options.index(current_contact)
-                if current_contact in contact_names
+            seed_contact    = st.session_state.get("cf_seed_contact", "")
+            default_c_idx   = (
+                contact_options.index(seed_contact)
+                if seed_contact in contact_names
                 else len(contact_options) - 1
             )
 
-            def _on_contact_change():
-                choice = st.session_state["client_contact_select"]
-                if choice != NEW_CONTACT_LABEL:
-                    match = next((c for c in contacts_list if c.get("contact") == choice), None)
-                    st.session_state["client_form_contact"]          = choice
-                    st.session_state["client_form_title"]            = match.get("title", "")  if match else ""
-                    st.session_state["client_form_mobile"]           = match.get("mobile", "") if match else ""
-                    st.session_state["client_form_email"]            = match.get("email", "")  if match else ""
-                    st.session_state["client_form_original_contact"] = choice
-                    st.session_state["client_form_original_company"] = st.session_state.get("client_form_company", "")
-                else:
-                    st.session_state["client_form_contact"]          = ""
-                    st.session_state["client_form_title"]            = ""
-                    st.session_state["client_form_mobile"]           = ""
-                    st.session_state["client_form_email"]            = ""
-                    st.session_state["client_form_original_contact"] = ""
+            if not company_value:
+                st.selectbox("👤 Contact Name", [NEW_CONTACT_LABEL], index=0,
+                             key="cf_contact_select", disabled=True)
+                contact_choice = NEW_CONTACT_LABEL
+            else:
+                st.selectbox("👤 Contact Name", contact_options, index=default_c_idx, key="cf_contact_select")
+                contact_choice = st.session_state["cf_contact_select"]
+                if contact_choice == NEW_CONTACT_LABEL:
+                    st.text_input(
+                        "New contact name",
+                        key="cf_contact_new",
+                        value=st.session_state.get(
+                            "cf_contact_new",
+                            seed_contact if seed_contact not in contact_names else "",
+                        ),
+                    )
 
-            st.selectbox(
-                "👤 Contact Name", contact_options, index=default_c_idx,
-                key="client_contact_select", on_change=_on_contact_change,
-            )
-            if st.session_state["client_contact_select"] == NEW_CONTACT_LABEL:
-                st.text_input("New contact name", key="client_form_contact")
+        contact_value = (
+            st.session_state.get("cf_contact_new", "").strip()
+            if contact_choice == NEW_CONTACT_LABEL else contact_choice
+        )
+
+        # Si se elige un contacto existente y cambió desde el último render,
+        # se precargan Title/Mobile/Email desde la base — el usuario sigue
+        # pudiendo sobreescribirlos libremente después.
+        matched = next((c for c in contacts_list if c.get("contact") == contact_choice), None) \
+            if contact_choice != NEW_CONTACT_LABEL else None
+
+        if st.session_state.get("_cf_last_seen_contact") != contact_value:
+            st.session_state["_cf_last_seen_contact"] = contact_value
+            if matched:
+                st.session_state["cf_title"]  = matched.get("title", "")
+                st.session_state["cf_mobile"] = matched.get("mobile", "")
+                st.session_state["cf_email"]  = matched.get("email", "")
+            elif contact_choice == NEW_CONTACT_LABEL:
+                st.session_state.pop("cf_title", None)
+                st.session_state.pop("cf_mobile", None)
+                st.session_state.pop("cf_email", None)
 
         with cc2:
-            st.text_input("💼 Contact Title", key="client_form_title")
+            st.text_input("💼 Contact Title", key="cf_title")
 
         # ── Mobile Phone / Email ─────────────────────────────────────────────
         cc3, cc4 = st.columns(2)
         with cc3:
-            st.text_input("📱 Mobile Phone", key="client_form_mobile")
+            st.text_input("📱 Mobile Phone", key="cf_mobile")
         with cc4:
-            st.text_input("✉️ Email", key="client_form_email")
+            st.text_input("✉️ Email", key="cf_email")
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    company_val = st.session_state.get("client_form_company", "").strip()
-    can_save    = bool(company_val)
+    can_save = bool(company_value)
     if not can_save:
         st.warning("Fill in at least **Company** to be able to save.")
 
@@ -293,7 +330,7 @@ def _render_form(clients_db: dict):
             )
 
     with btn3:
-        if is_editing or company_val:
+        if is_editing or company_value:
             st.button("✖ Cancel", use_container_width=True, on_click=_reset_form)
 
 
@@ -387,7 +424,7 @@ def show():
 
     _show_flash()
 
-    if "client_form_company" not in st.session_state:
+    if "cf_seed_company" not in st.session_state:
         _reset_form()
 
     clients_db = _load_db()
