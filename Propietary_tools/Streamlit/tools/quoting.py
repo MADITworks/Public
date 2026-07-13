@@ -805,7 +805,7 @@ def _show_new_quote():
         with cancel_col:
             cancel_clicked = st.button("✖ Cancel", key="btn_cancel", use_container_width=True)
 
-        st.caption("✏️ Edit **Unit Cost**, **Qty** or **Description** inline · Select rows with the checkbox and press **Delete** to remove them")
+        st.caption("✏️ Edit **Unit Cost**, **Qty** o **Description** inline · Selecciona filas con el checkbox y presiona **Delete** para eliminarlas")
 
         snapshot = st.session_state.get("items_snapshot", items).copy()
 
@@ -898,127 +898,133 @@ def _show_new_quote():
     with col_mid:
         st.markdown(render_summary_table(summary), unsafe_allow_html=True)
 
-    # ── Save to Repository ──────────────────────────────────────────────────────
-    st.divider()
-    st.markdown("### 💾 Save to Repository")
+    # ── Save to Repository / Send to Xero ───────────────────────────────────────
+    # Estas dos secciones solo tienen sentido cuando se está creando una quote
+    # NUEVA (aún no guardada). Si la quote ya viene del Historial (loaded_id
+    # presente), no se muestran: evita el riesgo de re-guardar / re-enviar a
+    # Xero un registro que ya existe y que podría generar conflictos o
+    # duplicados con lo que ya está en el repositorio.
+    if not loaded_id:
+        st.divider()
+        st.markdown("### 💾 Save to Repository")
 
-    # FIX: la UI de arriba (🏢 client · 👤 contact ...) se pinta desde
-    # `confirmed_client_info`, pero antes este bloque validaba solo contra
-    # `st.session_state["quote_client"]` / `["quote_title"]`, que no siempre
-    # quedan pobladas en el flujo de quote NUEVA (show_client_step() guarda
-    # en confirmed_client_info, no necesariamente en esas keys sueltas).
-    # Ahora usamos confirmed_client_info como fuente de verdad, con las keys
-    # de session_state como override si el usuario las tocó manualmente
-    # (p.ej. al editar los campos tras cargar una quote guardada).
-    info = st.session_state.get("confirmed_client_info", {})
+        # FIX: la UI de arriba (🏢 client · 👤 contact ...) se pinta desde
+        # `confirmed_client_info`, pero antes este bloque validaba solo contra
+        # `st.session_state["quote_client"]` / `["quote_title"]`, que no siempre
+        # quedan pobladas en el flujo de quote NUEVA (show_client_step() guarda
+        # en confirmed_client_info, no necesariamente en esas keys sueltas).
+        # Ahora usamos confirmed_client_info como fuente de verdad, con las keys
+        # de session_state como override si el usuario las tocó manualmente
+        # (p.ej. al editar los campos tras cargar una quote guardada).
+        info = st.session_state.get("confirmed_client_info", {})
 
-    client_val         = (st.session_state.get("quote_client") or info.get("client") or "").strip()
-    title_val          = (st.session_state.get("quote_title") or info.get("title") or "").strip()
-    contact_val        = st.session_state.get("quote_contact") or info.get("contact") or ""
-    contact_title_val  = st.session_state.get("quote_contact_title") or info.get("contact_title") or ""
-    contact_mobile_val = st.session_state.get("quote_contact_mobile") or info.get("contact_mobile") or ""
-    email_val          = st.session_state.get("quote_email") or info.get("email") or ""
-    date_val           = st.session_state.get("quote_date_obj") or info.get("date") or datetime.today().date()
+        client_val         = (st.session_state.get("quote_client") or info.get("client") or "").strip()
+        title_val          = (st.session_state.get("quote_title") or info.get("title") or "").strip()
+        contact_val        = st.session_state.get("quote_contact") or info.get("contact") or ""
+        contact_title_val  = st.session_state.get("quote_contact_title") or info.get("contact_title") or ""
+        contact_mobile_val = st.session_state.get("quote_contact_mobile") or info.get("contact_mobile") or ""
+        email_val          = st.session_state.get("quote_email") or info.get("email") or ""
+        date_val           = st.session_state.get("quote_date_obj") or info.get("date") or datetime.today().date()
 
-    can_save = bool(client_val) and bool(title_val)
-    if not can_save:
-        st.warning("Fill in at least **Company** and **Proposal title** to be able to save.")
+        can_save = bool(client_val) and bool(title_val)
+        if not can_save:
+            st.warning("Fill in at least **Company** and **Proposal title** to be able to save.")
 
-    if st.button("💾 Save Quote", type="primary", disabled=not can_save):
-        with st.spinner("Saving to repository..."):
-            try:
-                record = quotes_repo.save_quote(
-                    client=client_val,
-                    contact=contact_val,
-                    contact_title=contact_title_val,
-                    contact_mobile=contact_mobile_val,
-                    email=email_val,
-                    title=title_val,
-                    date=date_val.strftime("%d/%m/%Y"),
-                    meta=meta,
-                    items=items,
-                    margin_pct=margin_pct,
-                    distributor=distributor,
-                    file_bytes=st.session_state.get("original_excel_bytes"),
-                    original_filename=st.session_state.get("original_excel_name", ""),
-                    record_id=st.session_state.get("loaded_record_id"),
-                )
-            except Exception as e:
-                st.error(f"❌ Error saving to repository: {e}")
-                record = None
-
-        if record:
-            # Sincroniza las keys sueltas con lo que realmente se guardó,
-            # para que el resto del flujo (Xero, reload, etc.) las tenga
-            # disponibles de forma consistente.
-            st.session_state["quote_client"]         = client_val
-            st.session_state["quote_title"]          = title_val
-            st.session_state["quote_contact"]        = contact_val
-            st.session_state["quote_contact_title"]  = contact_title_val
-            st.session_state["quote_contact_mobile"] = contact_mobile_val
-            st.session_state["quote_email"]          = email_val
-            st.session_state["quote_date_obj"]       = date_val
-
-            st.session_state["quote_saved_record"] = record
-            st.session_state["loaded_record_id"]   = record["id"]
-            # Refresca también el snapshot usado por "More details" con lo
-            # que realmente se acaba de guardar.
-            snapshot_client_info()
-
-            # NOTA: ya no se llama a quotes_repo.upsert_client_contact() aquí.
-            # El cliente/contacto se crea siempre antes, en el módulo CLIENTS,
-            # así que no hace falta (ni conviene) volver a escribir
-            # clients.json en cada guardado de quote — esto solo añadía
-            # llamadas innecesarias a la API de GitHub y exponía a errores
-            # transitorios (p.ej. 502) sin ningún beneficio real.
-            st.success(f"✅ Quote saved — Quote #{record.get('quote_number', '—')}")
-
-    # ── Xero (only available after saving) ──────────────────────────────────────
-    st.divider()
-    st.markdown("### 🔗 Send to Xero")
-
-    if not st.session_state.get("quote_saved_record"):
-        st.info("Save the quote to the repository before sending it to Xero.")
-    else:
-        from integrations import xero as xero_integration
-
-        if xero_integration.is_connected():
-            st.success("✅ Xero connected")
-            if st.button("📤 Send to Xero as Draft Quote", type="primary"):
-                with st.spinner("Sending to Xero..."):
-                    try:
-                        result    = xero_integration.create_draft_quote(meta, items, margin_pct)
-                        quote_num = result.get("QuoteNumber", "")
-                        quote_id  = result.get("QuoteID", "")
-                        st.success(f"✅ Draft quote created in Xero! Quote #{quote_num} — ID: {quote_id}")
-                    except Exception as e:
-                        st.error(f"❌ Error sending to Xero: {e}")
-                        if hasattr(e, "response") and e.response is not None:
-                            st.json(e.response.json())
-        else:
-            try:
-                auth_url = xero_integration.get_auth_url()
-                col_connect, col_verify, _ = st.columns([2, 2, 3])
-                with col_connect:
-                    st.markdown(
-                        f'<a href="{auth_url}" target="_blank" rel="noopener noreferrer" '
-                        f'style="display:inline-block;background:#1a6fe8;color:#fff;'
-                        f'padding:10px 18px;border-radius:8px;text-decoration:none;'
-                        f'font-size:0.88rem;font-weight:500;">'
-                        f'🔗 Connect to Xero</a>',
-                        unsafe_allow_html=True,
+        if st.button("💾 Save Quote", type="primary", disabled=not can_save):
+            with st.spinner("Saving to repository..."):
+                try:
+                    record = quotes_repo.save_quote(
+                        client=client_val,
+                        contact=contact_val,
+                        contact_title=contact_title_val,
+                        contact_mobile=contact_mobile_val,
+                        email=email_val,
+                        title=title_val,
+                        date=date_val.strftime("%d/%m/%Y"),
+                        meta=meta,
+                        items=items,
+                        margin_pct=margin_pct,
+                        distributor=distributor,
+                        file_bytes=st.session_state.get("original_excel_bytes"),
+                        original_filename=st.session_state.get("original_excel_name", ""),
+                        record_id=st.session_state.get("loaded_record_id"),
                     )
-                with col_verify:
-                    if st.button("🔄 I've connected — verify", type="secondary"):
-                        if TOKEN_FILE.exists():
-                            tokens = json.loads(TOKEN_FILE.read_text())
-                            st.session_state["xero_tokens"] = tokens
-                            TOKEN_FILE.unlink()
-                            st.rerun()
-                        else:
-                            st.warning("Token not found yet — wait a few seconds and try again.")
-            except KeyError:
-                st.warning("⚠️ Xero credentials not configured. Add `[xero]` to your Streamlit secrets.")
+                except Exception as e:
+                    st.error(f"❌ Error saving to repository: {e}")
+                    record = None
+
+            if record:
+                # Sincroniza las keys sueltas con lo que realmente se guardó,
+                # para que el resto del flujo (Xero, reload, etc.) las tenga
+                # disponibles de forma consistente.
+                st.session_state["quote_client"]         = client_val
+                st.session_state["quote_title"]          = title_val
+                st.session_state["quote_contact"]        = contact_val
+                st.session_state["quote_contact_title"]  = contact_title_val
+                st.session_state["quote_contact_mobile"] = contact_mobile_val
+                st.session_state["quote_email"]          = email_val
+                st.session_state["quote_date_obj"]       = date_val
+
+                st.session_state["quote_saved_record"] = record
+                st.session_state["loaded_record_id"]   = record["id"]
+                # Refresca también el snapshot usado por "More details" con lo
+                # que realmente se acaba de guardar.
+                snapshot_client_info()
+
+                # NOTA: ya no se llama a quotes_repo.upsert_client_contact() aquí.
+                # El cliente/contacto se crea siempre antes, en el módulo CLIENTS,
+                # así que no hace falta (ni conviene) volver a escribir
+                # clients.json en cada guardado de quote — esto solo añadía
+                # llamadas innecesarias a la API de GitHub y exponía a errores
+                # transitorios (p.ej. 502) sin ningún beneficio real.
+                st.success(f"✅ Quote saved — Quote #{record.get('quote_number', '—')}")
+
+        # ── Xero (only available after saving) ──────────────────────────────────
+        st.divider()
+        st.markdown("### 🔗 Send to Xero")
+
+        if not st.session_state.get("quote_saved_record"):
+            st.info("Save the quote to the repository before sending it to Xero.")
+        else:
+            from integrations import xero as xero_integration
+
+            if xero_integration.is_connected():
+                st.success("✅ Xero connected")
+                if st.button("📤 Send to Xero as Draft Quote", type="primary"):
+                    with st.spinner("Sending to Xero..."):
+                        try:
+                            result    = xero_integration.create_draft_quote(meta, items, margin_pct)
+                            quote_num = result.get("QuoteNumber", "")
+                            quote_id  = result.get("QuoteID", "")
+                            st.success(f"✅ Draft quote created in Xero! Quote #{quote_num} — ID: {quote_id}")
+                        except Exception as e:
+                            st.error(f"❌ Error sending to Xero: {e}")
+                            if hasattr(e, "response") and e.response is not None:
+                                st.json(e.response.json())
+            else:
+                try:
+                    auth_url = xero_integration.get_auth_url()
+                    col_connect, col_verify, _ = st.columns([2, 2, 3])
+                    with col_connect:
+                        st.markdown(
+                            f'<a href="{auth_url}" target="_blank" rel="noopener noreferrer" '
+                            f'style="display:inline-block;background:#1a6fe8;color:#fff;'
+                            f'padding:10px 18px;border-radius:8px;text-decoration:none;'
+                            f'font-size:0.88rem;font-weight:500;">'
+                            f'🔗 Connect to Xero</a>',
+                            unsafe_allow_html=True,
+                        )
+                    with col_verify:
+                        if st.button("🔄 I've connected — verify", type="secondary"):
+                            if TOKEN_FILE.exists():
+                                tokens = json.loads(TOKEN_FILE.read_text())
+                                st.session_state["xero_tokens"] = tokens
+                                TOKEN_FILE.unlink()
+                                st.rerun()
+                            else:
+                                st.warning("Token not found yet — wait a few seconds and try again.")
+                except KeyError:
+                    st.warning("⚠️ Xero credentials not configured. Add `[xero]` to your Streamlit secrets.")
 
 
 # ── Main page ──────────────────────────────────────────────────────────────────
