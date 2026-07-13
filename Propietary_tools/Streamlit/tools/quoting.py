@@ -902,7 +902,25 @@ def _show_new_quote():
     st.divider()
     st.markdown("### 💾 Save to Repository")
 
-    can_save = bool(st.session_state.get("quote_client", "").strip()) and bool(st.session_state.get("quote_title", "").strip())
+    # FIX: la UI de arriba (🏢 client · 👤 contact ...) se pinta desde
+    # `confirmed_client_info`, pero antes este bloque validaba solo contra
+    # `st.session_state["quote_client"]` / `["quote_title"]`, que no siempre
+    # quedan pobladas en el flujo de quote NUEVA (show_client_step() guarda
+    # en confirmed_client_info, no necesariamente en esas keys sueltas).
+    # Ahora usamos confirmed_client_info como fuente de verdad, con las keys
+    # de session_state como override si el usuario las tocó manualmente
+    # (p.ej. al editar los campos tras cargar una quote guardada).
+    info = st.session_state.get("confirmed_client_info", {})
+
+    client_val         = (st.session_state.get("quote_client") or info.get("client") or "").strip()
+    title_val          = (st.session_state.get("quote_title") or info.get("title") or "").strip()
+    contact_val        = st.session_state.get("quote_contact") or info.get("contact") or ""
+    contact_title_val  = st.session_state.get("quote_contact_title") or info.get("contact_title") or ""
+    contact_mobile_val = st.session_state.get("quote_contact_mobile") or info.get("contact_mobile") or ""
+    email_val          = st.session_state.get("quote_email") or info.get("email") or ""
+    date_val           = st.session_state.get("quote_date_obj") or info.get("date") or datetime.today().date()
+
+    can_save = bool(client_val) and bool(title_val)
     if not can_save:
         st.warning("Fill in at least **Company** and **Proposal title** to be able to save.")
 
@@ -910,13 +928,13 @@ def _show_new_quote():
         with st.spinner("Saving to repository..."):
             try:
                 record = quotes_repo.save_quote(
-                    client=st.session_state["quote_client"],
-                    contact=st.session_state["quote_contact"],
-                    contact_title=st.session_state.get("quote_contact_title", ""),
-                    contact_mobile=st.session_state.get("quote_contact_mobile", ""),
-                    email=st.session_state["quote_email"],
-                    title=st.session_state["quote_title"],
-                    date=st.session_state["quote_date_obj"].strftime("%d/%m/%Y"),
+                    client=client_val,
+                    contact=contact_val,
+                    contact_title=contact_title_val,
+                    contact_mobile=contact_mobile_val,
+                    email=email_val,
+                    title=title_val,
+                    date=date_val.strftime("%d/%m/%Y"),
                     meta=meta,
                     items=items,
                     margin_pct=margin_pct,
@@ -930,6 +948,17 @@ def _show_new_quote():
                 record = None
 
         if record:
+            # Sincroniza las keys sueltas con lo que realmente se guardó,
+            # para que el resto del flujo (Xero, reload, etc.) las tenga
+            # disponibles de forma consistente.
+            st.session_state["quote_client"]         = client_val
+            st.session_state["quote_title"]          = title_val
+            st.session_state["quote_contact"]        = contact_val
+            st.session_state["quote_contact_title"]  = contact_title_val
+            st.session_state["quote_contact_mobile"] = contact_mobile_val
+            st.session_state["quote_email"]          = email_val
+            st.session_state["quote_date_obj"]       = date_val
+
             st.session_state["quote_saved_record"] = record
             st.session_state["loaded_record_id"]   = record["id"]
             # Refresca también el snapshot usado por "More details" con lo
@@ -938,30 +967,30 @@ def _show_new_quote():
 
             try:
                 quotes_repo.upsert_client_contact(
-                    client=st.session_state["quote_client"],
-                    contact=st.session_state["quote_contact"],
-                    email=st.session_state["quote_email"],
-                    title=st.session_state.get("quote_contact_title", ""),
-                    mobile=st.session_state.get("quote_contact_mobile", ""),
+                    client=client_val,
+                    contact=contact_val,
+                    email=email_val,
+                    title=contact_title_val,
+                    mobile=contact_mobile_val,
                 )
                 # keep the local cache in sync so it's available immediately
                 # without another API round trip
                 clients_db = st.session_state.get("clients_db", {})
-                contacts = clients_db.setdefault(st.session_state["quote_client"], [])
+                contacts = clients_db.setdefault(client_val, [])
                 names = [c.get("contact", "") for c in contacts]
-                if st.session_state["quote_contact"] and st.session_state["quote_contact"] not in names:
+                if contact_val and contact_val not in names:
                     contacts.append({
-                        "contact": st.session_state["quote_contact"],
-                        "email":   st.session_state["quote_email"],
-                        "title":   st.session_state.get("quote_contact_title", ""),
-                        "mobile":  st.session_state.get("quote_contact_mobile", ""),
+                        "contact": contact_val,
+                        "email":   email_val,
+                        "title":   contact_title_val,
+                        "mobile":  contact_mobile_val,
                     })
-                elif st.session_state["quote_contact"]:
+                elif contact_val:
                     for c in contacts:
-                        if c.get("contact") == st.session_state["quote_contact"]:
-                            c["email"]  = st.session_state["quote_email"]
-                            c["title"]  = st.session_state.get("quote_contact_title", "")
-                            c["mobile"] = st.session_state.get("quote_contact_mobile", "")
+                        if c.get("contact") == contact_val:
+                            c["email"]  = email_val
+                            c["title"]  = contact_title_val
+                            c["mobile"] = contact_mobile_val
                             break
             except Exception as e:
                 st.warning(f"Quote saved, but could not update the clients database: {e}")
