@@ -3,7 +3,7 @@ import json
 import pathlib
 
 st.set_page_config(
-    page_title="MADIT | Herramientas",
+    page_title="MADIT | Propietary tools",
     page_icon="🔷",
     layout="wide",
 )
