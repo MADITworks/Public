@@ -435,14 +435,28 @@ def _mime_for_filename(filename: str) -> str:
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-from client_contact_step import (
-    NEW_COMPANY_LABEL,
-    NEW_CONTACT_LABEL,
-    CLIENT_FORM_WIDGET_KEYS,
-    snapshot_client_info,
-    apply_confirmed_info,
-    show_client_step,
-)
+try:
+    # Caso normal: client_contact_step.py está en la MISMA carpeta que este
+    # archivo (quotes.py) — p.ej. dentro de tools/, junto a Clients.py.
+    from client_contact_step import (
+        NEW_COMPANY_LABEL,
+        NEW_CONTACT_LABEL,
+        CLIENT_FORM_WIDGET_KEYS,
+        snapshot_client_info,
+        apply_confirmed_info,
+        show_client_step,
+    )
+except ModuleNotFoundError:
+    # Fallback si quotes.py vive fuera del paquete tools/ pero
+    # client_contact_step.py sí se colocó dentro de tools/.
+    from tools.client_contact_step import (
+        NEW_COMPANY_LABEL,
+        NEW_CONTACT_LABEL,
+        CLIENT_FORM_WIDGET_KEYS,
+        snapshot_client_info,
+        apply_confirmed_info,
+        show_client_step,
+    )
 
 
 # ── Repository / navigation state helpers ───────────────────────────────────────
