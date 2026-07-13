@@ -965,36 +965,12 @@ def _show_new_quote():
             # que realmente se acaba de guardar.
             snapshot_client_info()
 
-            try:
-                quotes_repo.upsert_client_contact(
-                    client=client_val,
-                    contact=contact_val,
-                    email=email_val,
-                    title=contact_title_val,
-                    mobile=contact_mobile_val,
-                )
-                # keep the local cache in sync so it's available immediately
-                # without another API round trip
-                clients_db = st.session_state.get("clients_db", {})
-                contacts = clients_db.setdefault(client_val, [])
-                names = [c.get("contact", "") for c in contacts]
-                if contact_val and contact_val not in names:
-                    contacts.append({
-                        "contact": contact_val,
-                        "email":   email_val,
-                        "title":   contact_title_val,
-                        "mobile":  contact_mobile_val,
-                    })
-                elif contact_val:
-                    for c in contacts:
-                        if c.get("contact") == contact_val:
-                            c["email"]  = email_val
-                            c["title"]  = contact_title_val
-                            c["mobile"] = contact_mobile_val
-                            break
-            except Exception as e:
-                st.warning(f"Quote saved, but could not update the clients database: {e}")
-
+            # NOTA: ya no se llama a quotes_repo.upsert_client_contact() aquí.
+            # El cliente/contacto se crea siempre antes, en el módulo CLIENTS,
+            # así que no hace falta (ni conviene) volver a escribir
+            # clients.json en cada guardado de quote — esto solo añadía
+            # llamadas innecesarias a la API de GitHub y exponía a errores
+            # transitorios (p.ej. 502) sin ningún beneficio real.
             st.success(f"✅ Quote saved — Quote #{record.get('quote_number', '—')}")
 
     # ── Xero (only available after saving) ──────────────────────────────────────
