@@ -749,11 +749,10 @@ def _show_new_quote():
 
     # ── Badge ──────────────────────────────────────────────────────────────────
     badge_color = "#0077b6" if distributor == "TECHDATA" else "#2d6a4f"
-    st.markdown(
+    st.html(
         f'<span style="background:{badge_color};color:#fff;padding:3px 10px;'
         f'border-radius:12px;font-size:0.75rem;font-weight:600;">'
-        f'🏷 {distributor}</span>',
-        unsafe_allow_html=True,
+        f'🏷 {distributor}</span>'
     )
     st.markdown("")
 
@@ -799,25 +798,24 @@ def _show_new_quote():
     if not edit_mode:
         # ── READ-ONLY mode ─────────────────────────────────────────────────────
         with col_btn:
-            st.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
+            st.html("<div style='padding-top:28px'>")
             if st.button("✏️ Edit", key="btn_edit", use_container_width=True):
                 st.session_state["items_snapshot"] = st.session_state["items_saved"].copy()
                 st.session_state["edit_mode"]    = True
                 st.session_state["edit_counter"] = st.session_state.get("edit_counter", 0) + 1
                 st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.html("</div>")
 
-        st.markdown(
-            render_html_table(add_totals_cost(items), ["Unit Cost", "Total Cost"]),
-            unsafe_allow_html=True,
+        st.html(
+            render_html_table(add_totals_cost(items), ["Unit Cost", "Total Cost"])
         )
 
     else:
         # ── EDIT mode ──────────────────────────────────────────────────────────
         with col_btn:
-            st.markdown("<div style='padding-top:28px'>", unsafe_allow_html=True)
+            st.html("<div style='padding-top:28px'>")
             save_clicked = st.button("💾 Save", key="btn_save", type="primary", use_container_width=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+            st.html("</div>")
 
         cancel_col, _ = st.columns([1, 5])
         with cancel_col:
@@ -867,12 +865,11 @@ def _show_new_quote():
 
     df_margin = apply_margin(items, st.session_state["margin_pct"])
     sell_cols = ["#", "SKU", "Description", "Qty", "Unit Price", "Total"]
-    st.markdown(
+    st.html(
         render_html_table(
             add_totals_sell(df_margin[sell_cols].copy()),
             ["Unit Price", "Total"],
-        ),
-        unsafe_allow_html=True,
+        )
     )
 
     st.divider()
@@ -914,7 +911,7 @@ def _show_new_quote():
 
     _, col_mid, _ = st.columns([1, 2, 1])
     with col_mid:
-        st.markdown(render_summary_table(summary), unsafe_allow_html=True)
+        st.html(render_summary_table(summary))
 
     # ── Save to Repository / Send to Xero ───────────────────────────────────────
     # Estas dos secciones solo tienen sentido cuando se está creando una quote
@@ -1024,13 +1021,12 @@ def _show_new_quote():
                     auth_url = xero_integration.get_auth_url()
                     col_connect, col_verify, _ = st.columns([2, 2, 3])
                     with col_connect:
-                        st.markdown(
+                        st.html(
                             f'<a href="{auth_url}" target="_blank" rel="noopener noreferrer" '
                             f'style="display:inline-block;background:#1a6fe8;color:#fff;'
                             f'padding:10px 18px;border-radius:8px;text-decoration:none;'
                             f'font-size:0.88rem;font-weight:500;">'
-                            f'🔗 Connect to Xero</a>',
-                            unsafe_allow_html=True,
+                            f'🔗 Connect to Xero</a>'
                         )
                     with col_verify:
                         if st.button("🔄 I've connected — verify", type="secondary"):
