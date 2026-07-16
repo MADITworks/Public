@@ -252,38 +252,56 @@ def parse_techdata(sheets: dict) -> tuple[dict, pd.DataFrame]:
                     freight_amount = amt
                     break
 
-    header_idx = None
-    col_map    = {}
+    # ── Line-item blocks ──────────────────────────────────────────────────────
+    # IMPORTANT: a TechData "General" sheet can contain either:
+    #   (a) a single line-item block (one "Line No./Part No./Qty..." header,
+    #       one "Subtotal:" row) — the classic/original format, or
+    #   (b) MULTIPLE line-item blocks, each with its own header row and its
+    #       own "Subtotal:" (e.g. one block for hardware, another block for
+    #       a support/warranty add-on, etc).
+    # We detect every header row and walk each block separately, so both
+    # formats are handled by the same code path (a single block just means
+    # the loop below runs once).
+    header_row_indices = []
     for i, row in df_raw.iterrows():
         rs = " ".join(str(v).strip().lower() for v in row)
         if "line no." in rs or ("part no." in rs and "qty" in rs):
-            header_idx = i
-            for col_idx, cell in enumerate(row):
-                label = str(cell).strip().lower()
-                if "long description" in label or label == "description":
-                    col_map["description"] = col_idx
-                elif "customer part" in label:
-                    col_map.setdefault("description_fallback", col_idx)
-                elif label in ("qty", "quantity"):
-                    col_map["qty"] = col_idx
-                elif "unit price" in label or "unit cost" in label:
-                    col_map["unit_cost"] = col_idx
-                elif "ext. price" in label or "ext price" in label or "extended price" in label:
-                    col_map["total_cost"] = col_idx
-                elif "part no" in label and "customer" not in label:
-                    col_map["sku"] = col_idx
-            break
-
-    desc_col      = col_map.get("description", col_map.get("description_fallback", 4))
-    qty_col       = col_map.get("qty",       2)
-    sku_col       = col_map.get("sku",       1)
-    unit_cost_col = col_map.get("unit_cost", 7)
-    total_cost_col= col_map.get("total_cost",8)
+            header_row_indices.append(i)
 
     items = []
-    if header_idx is not None:
-        line_counter = 1
-        for i in range(header_idx + 1, len(df_raw)):
+    line_counter = 1
+
+    for block_num, header_idx in enumerate(header_row_indices):
+        header_row = df_raw.iloc[header_idx]
+        col_map = {}
+        for col_idx, cell in enumerate(header_row):
+            label = str(cell).strip().lower()
+            if "long description" in label or label == "description":
+                col_map["description"] = col_idx
+            elif "customer part" in label:
+                col_map.setdefault("description_fallback", col_idx)
+            elif label in ("qty", "quantity"):
+                col_map["qty"] = col_idx
+            elif "unit price" in label or "unit cost" in label:
+                col_map["unit_cost"] = col_idx
+            elif "ext. price" in label or "ext price" in label or "extended price" in label:
+                col_map["total_cost"] = col_idx
+            elif "part no" in label and "customer" not in label:
+                col_map["sku"] = col_idx
+
+        desc_col       = col_map.get("description", col_map.get("description_fallback", 4))
+        qty_col        = col_map.get("qty",        2)
+        sku_col        = col_map.get("sku",        1)
+        unit_cost_col  = col_map.get("unit_cost",  7)
+        total_cost_col = col_map.get("total_cost", 8)
+
+        # Each block stops at its own subtotal/total/freight/gst row, or —
+        # defensively — at the start of the next block's header row, in case
+        # a block is missing an explicit "subtotal" line before the next
+        # header.
+        next_header_idx = header_row_indices[block_num + 1] if block_num + 1 < len(header_row_indices) else len(df_raw)
+
+        for i in range(header_idx + 1, next_header_idx):
             row      = df_raw.iloc[i]
             row_vals = [str(v).strip() for v in row]
             joined   = " ".join(row_vals).lower()
