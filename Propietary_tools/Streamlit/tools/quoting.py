@@ -478,11 +478,21 @@ except ModuleNotFoundError:
 
 
 # ── Repository / navigation state helpers ───────────────────────────────────────
+# NOTA (fix bug "Xero desaparece"): `loaded_record_id` se usa para DOS cosas
+# distintas:
+#   1) Saber si la quote actual se abrió desde el Historial ("Open").
+#   2) Guardar el id devuelto por quotes_repo.save_quote() al hacer "Save Quote"
+#      de una quote NUEVA, para poder actualizarla si se guarda de nuevo.
+# El problema: al guardar una quote nueva, (2) deja `loaded_record_id` seteado,
+# y en el siguiente rerun (p.ej. al volver de autenticar Xero) el código
+# interpretaba eso como (1) y ocultaba toda la sección de "Save to Repository"
+# / "Send to Xero". Se agrega `opened_from_history`, que SOLO se activa cuando
+# la quote se abre realmente desde el Historial, para desacoplar ambos casos.
 NEW_QUOTE_STATE_KEYS = [
     "items_saved", "quote_file_id", "meta", "distributor", "edit_mode",
     "edit_counter", "items_snapshot", "quote_saved_record", "loaded_record_id",
     "original_excel_bytes", "original_excel_name",
-    "client_step_done", "confirmed_client_info",
+    "client_step_done", "confirmed_client_info", "opened_from_history",
 ]
 
 
@@ -538,6 +548,12 @@ def _load_saved_quote(record: dict):
     st.session_state["original_excel_bytes"] = excel_bytes
     st.session_state["original_excel_name"]  = detail["filename"]
     st.session_state["quote_saved_record"]   = record
+    # Esta quote viene realmente del Historial (botón "Open"): se marca
+    # explícitamente para que "Save to Repository" / "Send to Xero" se
+    # oculten, evitando duplicados. Esto es independiente de que, más abajo
+    # en _show_new_quote(), un "Save Quote" de una quote NUEVA también deje
+    # `loaded_record_id` seteado (ese caso NO debe ocultar Xero).
+    st.session_state["opened_from_history"]  = True
 
     # Un registro cargado desde el repositorio ya tiene cliente/contacto
     # validados: se marca el Paso 1 como completado y se congela el
@@ -650,6 +666,10 @@ def _show_new_quote():
     from tools import quotes_repo
 
     loaded_id = st.session_state.get("loaded_record_id")
+    # Distinción clave para el fix: `loaded_id` puede quedar seteado tanto
+    # por "Open" en el Historial como por un "Save Quote" reciente de una
+    # quote nueva. Solo el primer caso debe ocultar Save/Xero más abajo.
+    opened_from_history = st.session_state.get("opened_from_history", False)
 
     # ── Gate: el Paso 1 (Cliente/Contacto) debe estar validado antes de
     # continuar. Si estamos viendo una quote ya guardada, ese paso ya
@@ -914,12 +934,20 @@ def _show_new_quote():
         st.html(render_summary_table(summary))
 
     # ── Save to Repository / Send to Xero ───────────────────────────────────────
-    # Estas dos secciones solo tienen sentido cuando se está creando una quote
-    # NUEVA (aún no guardada). Si la quote ya viene del Historial (loaded_id
-    # presente), no se muestran: evita el riesgo de re-guardar / re-enviar a
-    # Xero un registro que ya existe y que podría generar conflictos o
-    # duplicados con lo que ya está en el repositorio.
-    if not loaded_id:
+    # Estas dos secciones solo tienen sentido cuando NO se está viendo una
+    # quote abierta desde el Historial (evita re-guardar / re-enviar a Xero
+    # un registro que ya existe y podría generar duplicados).
+    #
+    # FIX (bug "Xero desaparece"): antes esto se gateaba con `not loaded_id`,
+    # pero `loaded_id` también queda seteado justo después de guardar una
+    # quote NUEVA (ver más abajo: st.session_state["loaded_record_id"] =
+    # record["id"]). Eso hacía que, en el siguiente rerun (p.ej. al volver de
+    # autenticar con Xero y presionar "I've connected — verify"), esta
+    # sección entera se ocultara, incluido el botón "Send to Xero", aunque la
+    # quote NUNCA se hubiera abierto desde el Historial. Ahora se usa
+    # `opened_from_history`, que solo es True cuando la quote se abrió
+    # explícitamente con "Open" en el Historial.
+    if not opened_from_history:
         st.divider()
         st.markdown("### 💾 Save to Repository")
 
@@ -982,6 +1010,10 @@ def _show_new_quote():
 
                 st.session_state["quote_saved_record"] = record
                 st.session_state["loaded_record_id"]   = record["id"]
+                # IMPORTANTE: NO se marca `opened_from_history = True` aquí.
+                # Esta quote se guardó recién en esta sesión (no se abrió
+                # desde el Historial), así que Save to Repository / Send to
+                # Xero deben seguir visibles en los próximos reruns.
                 # Refresca también el snapshot usado por "More details" con lo
                 # que realmente se acaba de guardar.
                 snapshot_client_info()
