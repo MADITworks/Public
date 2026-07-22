@@ -444,6 +444,23 @@ def render_summary_table(summary: pd.DataFrame) -> str:
     return styles + f'<table class="summary-table">{header}<tbody>{rows_html}</tbody></table>'
 
 
+# ── Status badge helper (Sent / Accepted / Rejected / Expired) ─────────────────
+STATUS_BADGE_COLORS = {
+    "Sent":     "#5a6b7a",
+    "Accepted": "#2d6a4f",
+    "Rejected": "#a4353a",
+    "Expired":  "#8a6d1e",
+}
+
+
+def _status_badge_html(status: str) -> str:
+    color = STATUS_BADGE_COLORS.get(status, "#5a6b7a")
+    return (
+        f'<span style="background:{color};color:#fff;padding:2px 9px;'
+        f'border-radius:10px;font-size:0.72rem;font-weight:600;">{status}</span>'
+    )
+
+
 # ── Misc helpers ────────────────────────────────────────────────────────────────
 def _mime_for_filename(filename: str) -> str:
     """Devuelve el mime type correcto según la extensión real del archivo
@@ -592,12 +609,25 @@ def _show_history():
     if "quote_file_cache" not in st.session_state:
         st.session_state["quote_file_cache"] = {}
 
+    # Las quotes guardadas antes de añadir el campo "status" no lo tienen en
+    # su JSON — se leen como "Sent" por defecto (mismo valor que se asigna a
+    # las quotes nuevas), así que no hace falta migrar nada a mano.
     clients = sorted(set(q.get("client", "—") for q in quotes))
-    col_f, _ = st.columns([1, 3])
-    with col_f:
+    col_f1, col_f2, _ = st.columns([1, 1, 2])
+    with col_f1:
         client_filter = st.selectbox("Filter by client", ["All"] + clients)
+    with col_f2:
+        status_filter = st.selectbox("Filter by status", ["All"] + quotes_repo.STATUS_CHOICES)
 
-    filtered = quotes if client_filter == "All" else [q for q in quotes if q.get("client") == client_filter]
+    filtered = quotes
+    if client_filter != "All":
+        filtered = [q for q in filtered if q.get("client") == client_filter]
+    if status_filter != "All":
+        filtered = [q for q in filtered if q.get("status", quotes_repo.DEFAULT_STATUS) == status_filter]
+
+    if not filtered:
+        st.caption("No quotes match this filter.")
+        return
 
     grouped: dict[str, list] = {}
     for q in filtered:
@@ -613,27 +643,50 @@ def _show_history():
 
         recs_sorted = sorted(recs, key=_date_key, reverse=True)
 
-        with st.expander(f"🏢 {client}  ·  {len(recs_sorted)} quote(s)", expanded=(client_filter != "All")):
-            hc1, hc2, hc3, hc4, hc5, hc6 = st.columns([2.2, 1.3, 1.8, 1.3, 0.9, 1.3])
+        with st.expander(f"🏢 {client}  ·  {len(recs_sorted)} quote(s)", expanded=(client_filter != "All" or status_filter != "All")):
+            hc1, hc2, hc3, hc4, hc5, hc6, hc7 = st.columns([2.0, 1.2, 1.6, 1.2, 1.4, 0.9, 1.2])
             hc1.markdown("**Title**")
             hc2.markdown("**Date**")
             hc3.markdown("**Quote #**")
             hc4.markdown("**Total (Sell)**")
-            hc5.markdown("")
+            hc5.markdown("**Status**")
             hc6.markdown("")
+            hc7.markdown("")
 
             for rec in recs_sorted:
-                c1, c2, c3, c4, c5, c6 = st.columns([2.2, 1.3, 1.8, 1.3, 0.9, 1.3])
+                c1, c2, c3, c4, c5, c6, c7 = st.columns([2.0, 1.2, 1.6, 1.2, 1.4, 0.9, 1.2])
                 c1.write(rec.get("title", "—") or "—")
                 c2.write(rec.get("date", "—"))
                 c3.write(f"#{rec.get('quote_number', '—')}  ({rec.get('distributor', '—')})")
                 c4.write(fmt(rec.get("sell_total", 0)))
+
+                current_status = rec.get("status", quotes_repo.DEFAULT_STATUS)
                 with c5:
+                    new_status = st.selectbox(
+                        "Status",
+                        quotes_repo.STATUS_CHOICES,
+                        index=quotes_repo.STATUS_CHOICES.index(current_status)
+                              if current_status in quotes_repo.STATUS_CHOICES else 0,
+                        key=f"status_{rec['id']}",
+                        label_visibility="collapsed",
+                    )
+                    if new_status != current_status:
+                        try:
+                            quotes_repo.set_quote_status(rec["id"], new_status)
+                            # Actualiza también la cache local para que el
+                            # badge/orden se refleje sin tener que recargar
+                            # todo el índice desde GitHub.
+                            rec["status"] = new_status
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error updating status: {e}")
+
+                with c6:
                     if st.button("Open", key=f"open_{rec['id']}", use_container_width=True):
                         _load_saved_quote(rec)
                         st.session_state["quote_view"] = "new"
                         st.rerun()
-                with c6:
+                with c7:
                     cache    = st.session_state["quote_file_cache"]
                     filename = rec.get("filename", "")
                     if not filename:
@@ -681,10 +734,15 @@ def _show_new_quote():
     info = st.session_state.get("confirmed_client_info", {})
 
     if loaded_id:
+        saved_status = (st.session_state.get("quote_saved_record") or {}).get(
+            "status", quotes_repo.DEFAULT_STATUS
+        )
         st.info(
             f"📂 Viewing saved quote: **{st.session_state.get('quote_title', '')}** "
             f"— {st.session_state.get('quote_client', '')}"
         )
+        st.html(_status_badge_html(saved_status))
+        st.markdown("")
     else:
         summary_col, edit_col = st.columns([5, 1.3])
         with summary_col:
