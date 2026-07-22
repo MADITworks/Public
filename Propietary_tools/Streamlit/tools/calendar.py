@@ -7,10 +7,10 @@ from tools.quotes_repo import load_clients_db
 from tools import calendar_repo
 
 
-FREE_TEXT_LABEL = "✏️ Otro / no registrado..."
-MONTH_NAMES_ES  = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-                   "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-WEEKDAY_LABELS  = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]
+FREE_TEXT_LABEL = "✏️ Other / not registered..."
+MONTH_NAMES     = ["January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December"]
+WEEKDAY_LABELS  = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
 
 
 def _gen_id() -> str:
@@ -26,7 +26,7 @@ def _days_in_month(year: int, month: int) -> int:
 
 
 def _first_weekday(year: int, month: int) -> int:
-    """Lunes=0 ... Domingo=6 (igual que date.weekday())."""
+    """Monday=0 ... Sunday=6 (same as date.weekday())."""
     return date(year, month, 1).weekday()
 
 
@@ -61,7 +61,7 @@ def _show_flash():
         getattr(st, kind)(msg)
 
 
-# ── Cache de eventos en sesión ───────────────────────────────────────────────────
+# ── Session cache of events ──────────────────────────────────────────────────────
 def _load_events() -> list:
     if "cal_events_cache" not in st.session_state:
         try:
@@ -77,7 +77,7 @@ def _refresh_events():
 
 
 def _build_day_index(events: list) -> dict:
-    """Devuelve {'DD/MM/YYYY': {'events': [...], 'reminders': [(event, reminder), ...]}}"""
+    """Returns {'DD/MM/YYYY': {'events': [...], 'reminders': [(event, reminder), ...]}}"""
     idx = {}
     for e in events:
         idx.setdefault(e["date"], {"events": [], "reminders": []})["events"].append(e)
@@ -104,7 +104,7 @@ def _due_reminders(events: list, today: date) -> list:
     return due
 
 
-# ── Estado de edición (alta / edición de evento) ────────────────────────────────
+# ── Editing state (create / edit event) ─────────────────────────────────────────
 def _new_editing(default_date: date) -> dict:
     return {
         "id":             None,
@@ -117,6 +117,7 @@ def _new_editing(default_date: date) -> dict:
         "reminders": [
             {"id": _gen_id(), "date": _subtract_months(default_date, 2), "auto": True, "done": False}
         ],
+        "attachments": [],
     }
 
 
@@ -145,6 +146,7 @@ def _editing_from_event(event: dict) -> dict:
         "contact_choice": event.get("contact", ""),
         "notes":          event.get("notes", ""),
         "reminders":      reminders,
+        "attachments":    list(event.get("attachments", [])),
     }
 
 
@@ -160,7 +162,7 @@ def _cancel_editing():
     st.session_state.pop("cal_editing", None)
 
 
-# ── Banner de recordatorios pendientes ───────────────────────────────────────────
+# ── Pending reminders banner ─────────────────────────────────────────────────────
 def _render_reminder_banner(events: list):
     today = date.today()
     due   = _due_reminders(events, today)
@@ -168,18 +170,18 @@ def _render_reminder_banner(events: list):
         return
 
     with st.container(border=True):
-        st.markdown("#### 🔔 Recordatorios pendientes")
+        st.markdown("#### 🔔 Pending reminders")
         for e, rem in due:
             is_overdue = _parse_date(rem["date"]) < today
-            tag   = "🔴 Vencido" if is_overdue else "🟡 Hoy"
-            label = f"{tag} · **{e.get('event_name', '')}** — evento el {e.get('date', '')}"
+            tag   = "🔴 Overdue" if is_overdue else "🟡 Today"
+            label = f"{tag} · **{e.get('event_name', '')}** — event on {e.get('date', '')}"
             if e.get("client"):
                 label += f" · {e.get('client')}"
             col_a, col_b = st.columns([5, 1])
             with col_a:
                 st.write(label)
             with col_b:
-                if st.button("Descartar", key=f"cal_dismiss_{rem['id']}"):
+                if st.button("Dismiss", key=f"cal_dismiss_{rem['id']}"):
                     try:
                         calendar_repo.mark_reminder_done(e["id"], rem["id"])
                         _refresh_events()
@@ -188,13 +190,75 @@ def _render_reminder_banner(events: list):
                         st.error(f"❌ Error: {ex}")
 
 
-# ── Formulario de alta / edición de evento ───────────────────────────────────────
+# ── Attachments section (inside the event form) ─────────────────────────────────
+def _render_attachments_section(editing: dict, fk: int):
+    st.markdown("**📎 Attachments**")
+
+    if not editing.get("attachments"):
+        st.caption("No files attached yet.")
+
+    for att in list(editing.get("attachments", [])):
+        a1, a2, a3 = st.columns([3, 1, 0.6])
+        with a1:
+            size_kb = (att.get("size") or 0) / 1024
+            st.write(f"📄 {att.get('name', '')}  ·  {size_kb:.1f} KB")
+        with a2:
+            cache_key = f"_cal_att_bytes_{att.get('path')}"
+            if cache_key not in st.session_state:
+                try:
+                    st.session_state[cache_key] = calendar_repo.get_attachment_content(att["path"])
+                except Exception:
+                    st.session_state[cache_key] = None
+            data = st.session_state.get(cache_key)
+            if data is not None:
+                st.download_button(
+                    "⬇️", data=data, file_name=att.get("name", "file"),
+                    key=f"cal_att_dl_{att.get('path')}_{fk}",
+                )
+            else:
+                st.caption("⚠️ unavailable")
+        with a3:
+            if st.button("🗑️", key=f"cal_att_del_{att.get('path')}_{fk}"):
+                try:
+                    if editing["id"]:
+                        calendar_repo.delete_attachment(editing["id"], att)
+                    editing["attachments"] = [
+                        a for a in editing["attachments"] if a.get("path") != att.get("path")
+                    ]
+                    if editing["id"]:
+                        calendar_repo.save_event(
+                            event_name=editing["event_name"] or "(untitled)",
+                            event_date=_fmt_date(editing["date"]),
+                            client=editing["client_choice"],
+                            contact=editing["contact_choice"],
+                            notes=editing["notes"],
+                            reminders=[
+                                {"id": r["id"], "date": _fmt_date(r["date"]), "done": r.get("done", False)}
+                                for r in editing["reminders"]
+                            ],
+                            attachments=editing["attachments"],
+                            event_id=editing["id"],
+                        )
+                        _refresh_events()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error deleting attachment: {e}")
+
+    uploaded_files = st.file_uploader(
+        "Add new files",
+        accept_multiple_files=True,
+        key=f"cal_att_upload_{fk}",
+    )
+    return uploaded_files
+
+
+# ── Event create / edit form ─────────────────────────────────────────────────────
 def _render_event_form(clients_db: dict):
     editing = st.session_state.get("cal_editing")
     if editing is None:
         return
 
-    heading = "✏️ EDITAR EVENTO" if editing["id"] else "➕ NUEVO EVENTO / RECORDATORIO"
+    heading = "✏️ EDIT EVENT" if editing["id"] else "➕ NEW EVENT / REMINDER"
     fk = editing["form_key"]
 
     with st.container(border=True):
@@ -205,10 +269,10 @@ def _render_event_form(clients_db: dict):
         )
 
         editing["event_name"] = st.text_input(
-            "📌 Nombre del evento", value=editing["event_name"], key=f"cal_name_{fk}"
+            "📌 Event name", value=editing["event_name"], key=f"cal_name_{fk}"
         )
 
-        new_date = st.date_input("📅 Fecha del evento", value=editing["date"], key=f"cal_date_{fk}")
+        new_date = st.date_input("📅 Event date", value=editing["date"], key=f"cal_date_{fk}")
         if new_date != editing["date"]:
             editing["date"] = new_date
             for rem in editing["reminders"]:
@@ -225,10 +289,10 @@ def _render_event_form(clients_db: dict):
                 if editing["client_choice"] in clients_db
                 else len(client_options) - 1
             )
-            client_sel = st.selectbox("🏢 Cliente", client_options, index=c_idx, key=f"cal_client_{fk}")
+            client_sel = st.selectbox("🏢 Client", client_options, index=c_idx, key=f"cal_client_{fk}")
             if client_sel == FREE_TEXT_LABEL:
                 client_val = st.text_input(
-                    "Nombre del cliente (no registrado)",
+                    "Client name (not registered)",
                     value=editing["client_choice"] if editing["client_choice"] not in clients_db else "",
                     key=f"cal_client_free_{fk}",
                 )
@@ -245,38 +309,38 @@ def _render_event_form(clients_db: dict):
                 else len(contact_options) - 1
             )
             contact_sel = st.selectbox(
-                "👤 Contacto", contact_options, index=ct_idx, key=f"cal_contact_{fk}_{client_val}"
+                "👤 Contact", contact_options, index=ct_idx, key=f"cal_contact_{fk}_{client_val}"
             )
             if contact_sel == FREE_TEXT_LABEL:
                 contact_val = st.text_input(
-                    "Nombre del contacto (no registrado)",
+                    "Contact name (not registered)",
                     value=editing["contact_choice"] if editing["contact_choice"] not in contact_names else "",
                     key=f"cal_contact_free_{fk}_{client_val}",
                 )
             else:
                 contact_val = contact_sel
 
-        editing["notes"] = st.text_area("📝 Notas (opcional)", value=editing["notes"], key=f"cal_notes_{fk}")
+        editing["notes"] = st.text_area("📝 Notes (optional)", value=editing["notes"], key=f"cal_notes_{fk}")
 
-        st.markdown("**⏰ Recordatorios**")
+        st.markdown("**⏰ Reminders**")
         for i, rem in enumerate(list(editing["reminders"])):
             rcol1, rcol2, rcol3 = st.columns([3, 1, 0.6])
             rem_key = f"cal_rem_{rem['id']}_{fk}"
             with rcol1:
-                rnew = st.date_input(f"Recordatorio {i + 1}", value=rem["date"], key=rem_key)
+                rnew = st.date_input(f"Reminder {i + 1}", value=rem["date"], key=rem_key)
             if rnew != rem["date"]:
                 rem["date"] = rnew
                 rem["auto"] = False
             with rcol2:
                 if rem.get("done"):
-                    st.caption("✅ hecho")
+                    st.caption("✅ done")
             with rcol3:
                 st.write("")
                 if st.button("🗑️", key=f"cal_rem_del_{rem['id']}_{fk}"):
                     editing["reminders"] = [r for r in editing["reminders"] if r["id"] != rem["id"]]
                     st.rerun()
 
-        if st.button("➕ Añadir otro recordatorio", key=f"cal_rem_add_{fk}"):
+        if st.button("➕ Add another reminder", key=f"cal_rem_add_{fk}"):
             editing["reminders"].append({
                 "id": _gen_id(), "date": _subtract_months(editing["date"], 2),
                 "auto": False, "done": False,
@@ -284,18 +348,30 @@ def _render_event_form(clients_db: dict):
             st.rerun()
 
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+        uploaded_files = _render_attachments_section(editing, fk)
+
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
         can_save = bool(editing["event_name"].strip())
         if not can_save:
-            st.warning("El nombre del evento es obligatorio.")
+            st.warning("Event name is required.")
 
         b1, b2, b3, _ = st.columns([1.2, 1.2, 1.2, 3])
         with b1:
-            if st.button("💾 Guardar", type="primary", disabled=not can_save, key=f"cal_save_{fk}"):
+            if st.button("💾 Save", type="primary", disabled=not can_save, key=f"cal_save_{fk}"):
                 reminders_out = [
                     {"id": r["id"], "date": _fmt_date(r["date"]), "done": r.get("done", False)}
                     for r in editing["reminders"]
                 ]
                 try:
+                    eid = editing["id"] or _gen_id()
+
+                    new_attachments = list(editing.get("attachments", []))
+                    if uploaded_files:
+                        for f in uploaded_files:
+                            meta = calendar_repo.upload_attachment(eid, f.name, f.getvalue())
+                            new_attachments.append(meta)
+
                     calendar_repo.save_event(
                         event_name=editing["event_name"].strip(),
                         event_date=_fmt_date(editing["date"]),
@@ -303,35 +379,36 @@ def _render_event_form(clients_db: dict):
                         contact=contact_val.strip(),
                         notes=editing["notes"].strip(),
                         reminders=reminders_out,
-                        event_id=editing["id"],
+                        attachments=new_attachments,
+                        event_id=eid,
                     )
-                    _flash(f"✅ Evento guardado: {editing['event_name'].strip()}")
+                    _flash(f"✅ Event saved: {editing['event_name'].strip()}")
                     _refresh_events()
                     st.session_state["cal_selected_date"] = _fmt_date(editing["date"])
                     _cancel_editing()
                     st.rerun()
                 except Exception as e:
-                    st.error(f"❌ Error guardando el evento: {e}")
+                    st.error(f"❌ Error saving event: {e}")
 
         with b2:
-            if st.button("✖ Cancelar", key=f"cal_cancel_{fk}"):
+            if st.button("✖ Cancel", key=f"cal_cancel_{fk}"):
                 _cancel_editing()
                 st.rerun()
 
         if editing["id"]:
             with b3:
-                if st.button("🗑️ Borrar evento", key=f"cal_delete_{fk}"):
+                if st.button("🗑️ Delete event", key=f"cal_delete_{fk}"):
                     try:
                         calendar_repo.delete_event(editing["id"])
-                        _flash("✅ Evento borrado")
+                        _flash("✅ Event deleted")
                         _refresh_events()
                         _cancel_editing()
                         st.rerun()
                     except Exception as e:
-                        st.error(f"❌ Error borrando el evento: {e}")
+                        st.error(f"❌ Error deleting event: {e}")
 
 
-# ── Grid de meses ────────────────────────────────────────────────────────────────
+# ── Month grid ────────────────────────────────────────────────────────────────────
 def _render_week(cells: list, year: int, month: int, day_index: dict, selected_date_str: str, today: date):
     cols = st.columns(7)
     for col, d in zip(cols, cells):
@@ -362,7 +439,7 @@ def _render_week(cells: list, year: int, month: int, day_index: dict, selected_d
 def _render_month(year: int, month: int, day_index: dict, selected_date_str: str, today: date):
     st.markdown(
         f"<div style='text-align:center;font-weight:700;color:#1a2a3a;"
-        f"font-size:0.85rem;margin-bottom:4px;'>{MONTH_NAMES_ES[month - 1]} {year}</div>",
+        f"font-size:0.85rem;margin-bottom:4px;'>{MONTH_NAMES[month - 1]} {year}</div>",
         unsafe_allow_html=True,
     )
     header_cols = st.columns(7)
@@ -373,7 +450,7 @@ def _render_month(year: int, month: int, day_index: dict, selected_date_str: str
                 unsafe_allow_html=True,
             )
 
-    first_weekday = _first_weekday(year, month)  # Lunes=0
+    first_weekday = _first_weekday(year, month)  # Monday=0
     days_in_month = _days_in_month(year, month)
     week_cells = [""] * first_weekday
     for d in range(1, days_in_month + 1):
@@ -386,7 +463,7 @@ def _render_month(year: int, month: int, day_index: dict, selected_date_str: str
         _render_week(week_cells, year, month, day_index, selected_date_str, today)
 
 
-# ── Navegación de bloques de 4 meses ─────────────────────────────────────────────
+# ── Navigation across 4-month blocks ─────────────────────────────────────────────
 def _shift_block(delta_months: int):
     y = st.session_state["cal_start_year"]
     m = st.session_state["cal_start_month"] + delta_months
@@ -407,30 +484,30 @@ def _render_nav():
 
     nav1, nav2, nav3, nav4, _ = st.columns([1, 1, 1.4, 1.4, 3])
     with nav1:
-        if st.button("← Anterior", use_container_width=True):
+        if st.button("← Previous", use_container_width=True):
             _shift_block(-4)
             st.rerun()
     with nav2:
-        if st.button("Siguiente →", use_container_width=True):
+        if st.button("Next →", use_container_width=True):
             _shift_block(4)
             st.rerun()
     with nav3:
         years = list(range(date.today().year - 5, date.today().year + 6))
         y_idx = years.index(st.session_state["cal_start_year"]) if st.session_state["cal_start_year"] in years else years.index(date.today().year)
-        sel_year = st.selectbox("Año inicio", years, index=y_idx, key="cal_year_select")
+        sel_year = st.selectbox("Start year", years, index=y_idx, key="cal_year_select")
         if sel_year != st.session_state["cal_start_year"]:
             st.session_state["cal_start_year"] = sel_year
             st.rerun()
     with nav4:
         m_idx = st.session_state["cal_start_month"] - 1
-        sel_month_name = st.selectbox("Mes inicio", MONTH_NAMES_ES, index=m_idx, key="cal_month_select")
-        new_month_num = MONTH_NAMES_ES.index(sel_month_name) + 1
+        sel_month_name = st.selectbox("Start month", MONTH_NAMES, index=m_idx, key="cal_month_select")
+        new_month_num = MONTH_NAMES.index(sel_month_name) + 1
         if new_month_num != st.session_state["cal_start_month"]:
             st.session_state["cal_start_month"] = new_month_num
             st.rerun()
 
 
-# ── Detalle del día seleccionado ─────────────────────────────────────────────────
+# ── Selected day detail ──────────────────────────────────────────────────────────
 def _render_day_detail(events: list, selected_date_str: str):
     st.divider()
 
@@ -438,7 +515,7 @@ def _render_day_detail(events: list, selected_date_str: str):
     with head_col:
         st.markdown(f"### 📆 {selected_date_str}")
     with add_col:
-        if st.button("➕ Añadir evento", use_container_width=True):
+        if st.button("➕ Add event", use_container_width=True):
             try:
                 sel_date_obj = _parse_date(selected_date_str)
             except (ValueError, TypeError):
@@ -456,7 +533,7 @@ def _render_day_detail(events: list, selected_date_str: str):
                 day_reminders.append((e, rem))
 
     if not day_events and not day_reminders:
-        st.caption("Sin eventos ni recordatorios este día.")
+        st.caption("No events or reminders for this day.")
 
     for e in day_events:
         with st.container(border=True):
@@ -476,7 +553,23 @@ def _render_day_detail(events: list, selected_date_str: str):
                     rem_txt = ", ".join(
                         r["date"] + (" ✅" if r.get("done") else "") for r in e["reminders"]
                     )
-                    st.caption(f"⏰ Recordatorios: {rem_txt}")
+                    st.caption(f"⏰ Reminders: {rem_txt}")
+                if e.get("attachments"):
+                    for att in e["attachments"]:
+                        cache_key = f"_cal_att_bytes_{att.get('path')}"
+                        if cache_key not in st.session_state:
+                            try:
+                                st.session_state[cache_key] = calendar_repo.get_attachment_content(att["path"])
+                            except Exception:
+                                st.session_state[cache_key] = None
+                        data = st.session_state.get(cache_key)
+                        if data is not None:
+                            st.download_button(
+                                f"📎 {att.get('name', 'file')}",
+                                data=data,
+                                file_name=att.get("name", "file"),
+                                key=f"cal_view_att_dl_{e['id']}_{att.get('path')}",
+                            )
             with c2:
                 if st.button("✏️", key=f"cal_edit_{e['id']}", use_container_width=True):
                     _start_edit_event(e)
@@ -485,20 +578,20 @@ def _render_day_detail(events: list, selected_date_str: str):
                 if st.button("🗑️", key=f"cal_del_{e['id']}", use_container_width=True):
                     try:
                         calendar_repo.delete_event(e["id"])
-                        _flash("✅ Evento borrado")
+                        _flash("✅ Event deleted")
                         _refresh_events()
                         st.rerun()
                     except Exception as ex:
-                        st.error(f"❌ Error borrando: {ex}")
+                        st.error(f"❌ Error deleting: {ex}")
 
     for e, rem in day_reminders:
         st.info(
-            f"⏰ Recordatorio de **{e.get('event_name', '')}** (evento el {e.get('date', '')})"
+            f"⏰ Reminder for **{e.get('event_name', '')}** (event on {e.get('date', '')})"
             + (f" · {e.get('client')}" if e.get("client") else "")
         )
 
 
-# ── Página principal ─────────────────────────────────────────────────────────────
+# ── Main page ─────────────────────────────────────────────────────────────────────
 def show():
     st.title("🗓️ CALENDAR")
     _show_flash()
