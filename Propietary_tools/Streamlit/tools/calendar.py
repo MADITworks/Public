@@ -162,6 +162,63 @@ def _cancel_editing():
     st.session_state.pop("cal_editing", None)
 
 
+# ── Next upcoming event (shown regardless of which date is selected) ───────────
+def _next_upcoming_event(events: list, today: date):
+    """Returns (date, event) for the closest event whose date is today or in
+    the future, or None if there are no upcoming events. If several events
+    share the same closest date, the first one found is returned."""
+    upcoming = []
+    for e in events:
+        try:
+            d = _parse_date(e.get("date", ""))
+        except (ValueError, TypeError):
+            continue
+        if d >= today:
+            upcoming.append((d, e))
+    if not upcoming:
+        return None
+    upcoming.sort(key=lambda pair: pair[0])
+    return upcoming[0]
+
+
+def _render_next_event(events: list):
+    st.divider()
+    st.markdown("### ⏭️ Next upcoming event")
+
+    result = _next_upcoming_event(events, date.today())
+    if result is None:
+        st.caption("No upcoming events.")
+        return
+
+    ev_date, e = result
+    days_until = (ev_date - date.today()).days
+    if days_until == 0:
+        when_label = "Today"
+    elif days_until == 1:
+        when_label = "Tomorrow"
+    else:
+        when_label = f"in {days_until} days"
+
+    with st.container(border=True):
+        c1, c2 = st.columns([5, 1.4])
+        with c1:
+            st.markdown(f"**{e.get('event_name', '')}**")
+            st.caption(f"📅 {e.get('date', '')}  ·  {when_label}")
+            sub = []
+            if e.get("client"):
+                sub.append(f"🏢 {e['client']}")
+            if e.get("contact"):
+                sub.append(f"👤 {e['contact']}")
+            if sub:
+                st.caption(" · ".join(sub))
+            if e.get("notes"):
+                st.caption(e["notes"])
+        with c2:
+            if st.button("📆 View day", key="cal_goto_next_event", use_container_width=True):
+                st.session_state["cal_selected_date"] = e["date"]
+                st.rerun()
+
+
 # ── Pending reminders banner ─────────────────────────────────────────────────────
 def _render_reminder_banner(events: list):
     today = date.today()
@@ -640,3 +697,4 @@ def show():
 
     _render_day_detail(events, st.session_state["cal_selected_date"])
     _render_event_form(clients_db)
+    _render_next_event(events)
