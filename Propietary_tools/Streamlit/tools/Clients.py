@@ -390,9 +390,10 @@ def _render_browse(clients_db: dict):
 
     for company in companies:
         contacts = clients_db.get(company, [])
-        # Siempre desplegado: se quiere ver la lista completa de un vistazo,
-        # sin tener que hacer clic en cada empresa para abrirla.
-        with st.expander(f"🏢 {company}  ·  {len(contacts)} contact(s)", expanded=True):
+        # Cerrado por defecto: se quiere ver rápido el listado completo de
+        # empresas (solo el nombre), y que cada una se expanda a demanda
+        # con un clic cuando el usuario quiera ver sus contactos.
+        with st.expander(f"🏢 {company}  ·  {len(contacts)} contact(s)", expanded=False):
 
             if contacts:
                 hc1, hc2, hc3, hc4, hc5, hc6 = st.columns(row_widths)
