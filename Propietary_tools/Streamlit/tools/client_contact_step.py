@@ -11,17 +11,10 @@ growing. quotes.py imports from here:
         apply_confirmed_info,
     )
 
-Design notes (v3 — decoupled from client creation):
-- Quotes no longer creates clients or contacts. A client/contact must
-  already exist (created beforehand in the Clients module). This step is a
-  pure SELECTOR over existing data — there is no "New company..." /
-  "New contact..." option anymore.
-- The only place this file touches anything outside Quotes is
-  clients_lookup.load_clients_readonly(), which is READ-ONLY. Nothing here
-  writes to clients.json, and nothing here imports quotes_repo or any
-  Clients-module code.
-- No per-field "Save" buttons. Proposal Title and Date are plain widgets you
-  fill in freely; the client/contact pickers are read-only selects.
+Design notes (v2 — simplified):
+- No per-field "Save" buttons. All fields (Company, Contact Name, Contact
+  Title, Mobile, Email, Proposal Title, Date) are plain widgets you fill in
+  freely, in any order.
 - ONE button at the bottom, "✔ Verify & Continue →", validates everything
   at once and — only if everything is valid — commits the values into the
   canonical `quote_*` keys and advances to the quote step.
@@ -46,24 +39,21 @@ Public surface:
   a saved quote as already having a confirmed client/contact step.
 """
 
+import re
 import streamlit as st
 
-try:
-    # Caso normal: clients_lookup.py está en la MISMA carpeta que este
-    # archivo (client_contact_step.py) — p.ej. dentro de tools/.
-    import clients_lookup
-except ModuleNotFoundError:
-    # Fallback si este archivo se importó como tools.client_contact_step
-    # (ver quotes.py) y clients_lookup.py vive dentro del paquete tools/.
-    from tools import clients_lookup
 
+NEW_COMPANY_LABEL = "➕ New company..."
+NEW_CONTACT_LABEL = "➕ New contact..."
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # Draft widget keys used inside the Client & Contact form. Nothing here is
 # canonical — they only get copied into `quote_client` / `quote_contact` /
 # etc. when "Verify & Continue" succeeds.
 CLIENT_FORM_WIDGET_KEYS = [
-    "cc_company_widget",
-    "cc_contact_widget",
+    "cc_company_widget", "cc_company_new_name",
+    "cc_contact_widget", "cc_contact_new_name",
     "cc_contact_title", "cc_contact_mobile", "cc_contact_email",
     "_cc_last_seen_company", "_cc_last_seen_contact",
 ]
@@ -93,11 +83,9 @@ def apply_confirmed_info(info: dict):
 
 
 def _render_fields(clients_db: dict):
-    """Renderiza Company / Contact / Title / Mobile / Email como selectores
-    de SOLO LECTURA sobre clientes/contactos ya existentes. No hay forma de
-    crear un cliente o contacto nuevo desde aquí — eso se hace en el módulo
-    Clientes. La validación real ocurre toda junta cuando se pulsa
-    'Verify & Continue'."""
+    """Renderiza Company / Contact / Title / Mobile / Email como widgets
+    simples, sin botones ni callbacks. Cualquier orden de relleno es válido;
+    la validación real ocurre toda junta cuando se pulsa 'Verify & Continue'."""
 
     with st.container(border=True):
         hcol1, hcol2 = st.columns([5, 1.3])
@@ -114,92 +102,119 @@ def _render_fields(clients_db: dict):
 
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
-        if not clients_db:
-            st.warning(
-                "⚠️ No clients found. Create the client in the **Clients** module first, "
-                "then come back here."
-            )
-            return "", ""
-
-        # ── Company (solo existentes) ────────────────────────────────────────
-        company_options = sorted(clients_db.keys())
+        # ── Company ───────────────────────────────────────────────────────────
+        company_options = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
         prior_client = st.session_state.get("quote_client", "")
-        default_idx = company_options.index(prior_client) if prior_client in company_options else 0
+        default_idx = company_options.index(prior_client) if prior_client in clients_db else len(company_options) - 1
 
         st.selectbox("🏢 Company", company_options, index=default_idx, key="cc_company_widget")
-        company_value = st.session_state["cc_company_widget"]
+        company_choice = st.session_state["cc_company_widget"]
+
+        if company_choice == NEW_COMPANY_LABEL:
+            st.text_input(
+                "New company name",
+                key="cc_company_new_name",
+                value=st.session_state.get(
+                    "cc_company_new_name",
+                    prior_client if prior_client not in clients_db else "",
+                ),
+            )
+            company_value = st.session_state.get("cc_company_new_name", "").strip()
+        else:
+            company_value = company_choice
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-        # If the selected company changed since the last render, the contact
-        # list it feeds is stale — clear the contact widgets so the person
-        # doesn't accidentally submit a contact from a different company.
-        # This is a plain top-to-bottom comparison, no on_change callback
-        # involved, so there's nothing that can read a not-yet-created
-        # widget key.
+        # If the selected/typed company changed since the last render, the
+        # contact list it feeds is stale — clear the contact widgets so the
+        # person doesn't accidentally submit a contact from a different
+        # company. This is a plain top-to-bottom comparison, no on_change
+        # callback involved, so there's nothing that can read a
+        # not-yet-created widget key.
         if st.session_state.get("_cc_last_seen_company") != company_value:
             st.session_state.pop("cc_contact_widget", None)
+            st.session_state.pop("cc_contact_new_name", None)
             st.session_state.pop("cc_contact_title", None)
             st.session_state.pop("cc_contact_mobile", None)
             st.session_state.pop("cc_contact_email", None)
             st.session_state["_cc_last_seen_company"] = company_value
 
-        # ── Contact Name (solo existentes) ───────────────────────────────────
-        contacts_list = clients_db.get(company_value, [])
-        contact_names = [c.get("contact", "") for c in contacts_list if c.get("contact")]
-        prior_contact = st.session_state.get("quote_contact", "")
-        default_c_idx = contact_names.index(prior_contact) if prior_contact in contact_names else 0
+        # ── Contact Name / Contact Title ─────────────────────────────────────
+        contacts_list   = clients_db.get(company_value, [])
+        contact_names   = [c.get("contact", "") for c in contacts_list if c.get("contact")]
+        contact_options = contact_names + [NEW_CONTACT_LABEL]
+        prior_contact   = st.session_state.get("quote_contact", "")
+        default_c_idx   = contact_options.index(prior_contact) if prior_contact in contact_names else len(contact_options) - 1
 
         cc1, cc2 = st.columns(2)
         with cc1:
-            if not contact_names:
-                st.selectbox("👤 Contact Name", ["—"], index=0,
+            if not company_value:
+                st.selectbox("👤 Contact Name", [NEW_CONTACT_LABEL], index=0,
                              key="cc_contact_widget", disabled=True)
-                st.caption(
-                    "This client has no contacts yet — add one in the **Clients** module."
-                )
-                contact_value = ""
+                st.caption("Fill in the company first.")
+                contact_choice = NEW_CONTACT_LABEL
             else:
-                st.selectbox("👤 Contact Name", contact_names, index=default_c_idx, key="cc_contact_widget")
-                contact_value = st.session_state["cc_contact_widget"]
+                st.selectbox("👤 Contact Name", contact_options, index=default_c_idx, key="cc_contact_widget")
+                contact_choice = st.session_state["cc_contact_widget"]
+                if contact_choice == NEW_CONTACT_LABEL:
+                    st.text_input(
+                        "New contact name",
+                        key="cc_contact_new_name",
+                        value=st.session_state.get(
+                            "cc_contact_new_name",
+                            prior_contact if prior_contact not in contact_names else "",
+                        ),
+                    )
 
-        # Title/Mobile/Email vienen del registro del cliente y se muestran
-        # de solo lectura: son datos que pertenecen al módulo Clientes, no
-        # algo que Quotes deba poder sobreescribir.
-        matched = next((c for c in contacts_list if c.get("contact") == contact_value), None)
+        contact_value = (
+            st.session_state.get("cc_contact_new_name", "").strip()
+            if contact_choice == NEW_CONTACT_LABEL else contact_choice
+        )
+
+        # If an existing contact was picked and it changed since the last
+        # render, pre-fill Title/Mobile/Email from the clients DB. The
+        # person can still overwrite them freely afterwards.
+        matched = next((c for c in contacts_list if c.get("contact") == contact_choice), None) \
+            if contact_choice != NEW_CONTACT_LABEL else None
 
         if st.session_state.get("_cc_last_seen_contact") != contact_value:
             st.session_state["_cc_last_seen_contact"] = contact_value
-            st.session_state["cc_contact_title"]  = matched.get("title", "") if matched else ""
-            st.session_state["cc_contact_mobile"] = matched.get("mobile", "") if matched else ""
-            st.session_state["cc_contact_email"]  = matched.get("email", "") if matched else ""
+            if matched:
+                st.session_state["cc_contact_title"]  = matched.get("title", "")
+                st.session_state["cc_contact_mobile"] = matched.get("mobile", "")
+                st.session_state["cc_contact_email"]  = matched.get("email", "")
+            elif contact_choice == NEW_CONTACT_LABEL:
+                st.session_state.pop("cc_contact_title", None)
+                st.session_state.pop("cc_contact_mobile", None)
+                st.session_state.pop("cc_contact_email", None)
 
         with cc2:
-            st.text_input("💼 Contact Title", key="cc_contact_title", disabled=True)
+            st.text_input("💼 Contact Title", key="cc_contact_title")
 
+        # ── Mobile Phone / Email ─────────────────────────────────────────────
         cc3, cc4 = st.columns(2)
         with cc3:
-            st.text_input("📱 Mobile Phone", key="cc_contact_mobile", disabled=True)
+            st.text_input("📱 Mobile Phone", key="cc_contact_mobile")
         with cc4:
-            st.text_input("✉️ Email", key="cc_contact_email", disabled=True)
+            st.text_input("✉️ Email", key="cc_contact_email")
 
     return company_value, contact_value
 
 
 def show_client_step():
-    """Punto de entrada público: renderiza el Paso 1 completo (selector de
-    cliente/contacto existentes + Proposal Title/Date + botón único
-    'Verify & Continue' con validación)."""
+    """Punto de entrada público: renderiza el Paso 1 completo (formulario +
+    Proposal Title/Date + botón único 'Verify & Continue' con validación)."""
+    from tools import quotes_repo
 
     st.markdown("### 📝 Step 1 — Client &amp; Contact")
-    st.caption("Pick an existing client and contact, then verify to move on to the quote.")
+    st.caption("Fill in everything, then verify to move on to the quote.")
 
     if "clients_db" not in st.session_state:
         try:
-            st.session_state["clients_db"] = clients_lookup.load_clients_readonly()
+            st.session_state["clients_db"] = quotes_repo.load_clients_db()
         except Exception as e:
             st.session_state["clients_db"] = {}
-            st.warning(f"Could not load clients: {e}")
+            st.warning(f"Could not load clients database: {e}")
 
     clients_db = st.session_state["clients_db"]
 
@@ -225,13 +240,15 @@ def show_client_step():
     # ── Validate everything at once ──────────────────────────────────────────
     errors = []
     if not company_value:
-        errors.append("Company is required — create it in the Clients module first.")
+        errors.append("Company is required.")
     if not contact_value:
-        errors.append("Contact name is required — add one in the Clients module first.")
+        errors.append("Contact name is required.")
 
     email = st.session_state.get("cc_contact_email", "").strip()
     if not email:
-        errors.append("The selected contact has no email on file — fix it in the Clients module.")
+        errors.append("Contact email is required.")
+    elif not _EMAIL_RE.match(email):
+        errors.append("Contact email doesn't look like a valid email address.")
 
     proposal_title = st.session_state.get("quote_title", "").strip()
     if not proposal_title:
