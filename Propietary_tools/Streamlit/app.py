@@ -130,7 +130,7 @@ else:
 
         pagina = st.radio(
             "Menu",
-            ["📋 QUOTES", "👥 CLIENTS"],
+            ["📋 QUOTES", "👥 CLIENTS", "🗓️ CALENDAR"],
             label_visibility="hidden"
         )
 
@@ -146,4 +146,7 @@ else:
         show()
     elif pagina == "👥 CLIENTS":
         from tools.Clients import show
+        show()
+    elif pagina == "🗓️ CALENDAR":
+        from tools.Calendar import show
         show()
