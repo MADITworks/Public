@@ -55,6 +55,19 @@ def _refresh_db():
     st.session_state.pop("clients_db_page", None)
 
 
+# ── Form open/close state ────────────────────────────────────────────────────
+# El formulario de alta/edición ya NO se muestra siempre: por defecto la
+# página enseña directamente el listado de clientes. Solo se despliega
+# cuando el usuario pulsa "➕ Add client" (arriba a la derecha), edita un
+# contacto (✏️) o añade un contacto a una empresa existente (➕ Add contact).
+def _open_form():
+    st.session_state["client_form_open"] = True
+
+
+def _close_form():
+    st.session_state["client_form_open"] = False
+
+
 # ── Form state helpers (se usan SOLO como on_click callbacks de botones —
 # nunca como on_change de un selectbox, que es lo que causaba el KeyError) ──
 def _reset_form():
@@ -66,6 +79,20 @@ def _reset_form():
     st.session_state["cf_original_contact"]  = ""
 
 
+def _handle_add_client_click():
+    """Botón 'Add client' de arriba: abre el formulario limpio, listo para
+    dar de alta un cliente/contacto nuevo."""
+    _reset_form()
+    _open_form()
+
+
+def _handle_cancel_form():
+    """Cierra el formulario y lo deja limpio, volviendo directamente al
+    listado."""
+    _reset_form()
+    _close_form()
+
+
 def _start_edit(company: str, contact: dict):
     """Carga el formulario con los datos de un contacto existente para editarlo."""
     for key in WIDGET_KEYS:
@@ -74,6 +101,7 @@ def _start_edit(company: str, contact: dict):
     st.session_state["cf_seed_contact"]     = contact.get("contact", "")
     st.session_state["cf_original_company"] = company
     st.session_state["cf_original_contact"] = contact.get("contact", "")
+    _open_form()
 
 
 def _start_new_contact_for(company: str):
@@ -84,6 +112,7 @@ def _start_new_contact_for(company: str):
     st.session_state["cf_seed_contact"]     = ""
     st.session_state["cf_original_company"] = ""
     st.session_state["cf_original_contact"] = ""
+    _open_form()
 
 
 # ── Acciones (on_click callbacks de botones) ─────────────────────────────────
@@ -144,6 +173,7 @@ def _handle_save():
         _flash(f"✅ Saved — {company_val}" + (f" / {contact_val}" if contact_val else ""))
         _refresh_db()
         _reset_form()
+        _close_form()
     except Exception as e:
         _flash(f"❌ Error saving: {e}", "error")
 
@@ -156,6 +186,7 @@ def _handle_delete_contact_from_form():
         _flash(f"✅ Contact deleted: {contact}")
         _refresh_db()
         _reset_form()
+        _close_form()
     except Exception as e:
         _flash(f"❌ Error deleting contact: {e}", "error")
 
@@ -171,6 +202,7 @@ def _handle_delete_contact_row(company: str, contact_name: str):
             and st.session_state.get("cf_original_contact") == contact_name
         ):
             _reset_form()
+            _close_form()
     except Exception as e:
         _flash(f"❌ Error deleting: {e}", "error")
 
@@ -191,6 +223,7 @@ def _handle_delete_company(company: str):
         st.session_state.pop(f"confirm_delete_company_{company}", None)
         if st.session_state.get("cf_original_company") == company:
             _reset_form()
+            _close_form()
     except Exception as e:
         _flash(f"❌ Error deleting company: {e}", "error")
 
@@ -330,8 +363,7 @@ def _render_form(clients_db: dict):
             )
 
     with btn3:
-        if is_editing or company_value:
-            st.button("✖ Cancel", use_container_width=True, on_click=_reset_form)
+        st.button("✖ Cancel", use_container_width=True, on_click=_handle_cancel_form)
 
 
 # ── Browse / list ────────────────────────────────────────────────────────────
@@ -339,7 +371,7 @@ def _render_browse(clients_db: dict):
     st.markdown("### 📚 Client Directory")
 
     if not clients_db:
-        st.info("No clients saved yet — use the form above to add your first one.")
+        st.info("No clients saved yet — click **➕ Add client** above to add your first one.")
         return
 
     col_f, _ = st.columns([1, 3])
@@ -358,7 +390,9 @@ def _render_browse(clients_db: dict):
 
     for company in companies:
         contacts = clients_db.get(company, [])
-        with st.expander(f"🏢 {company}  ·  {len(contacts)} contact(s)"):
+        # Siempre desplegado: se quiere ver la lista completa de un vistazo,
+        # sin tener que hacer clic en cada empresa para abrirla.
+        with st.expander(f"🏢 {company}  ·  {len(contacts)} contact(s)", expanded=True):
 
             if contacts:
                 hc1, hc2, hc3, hc4, hc5, hc6 = st.columns(row_widths)
@@ -419,16 +453,28 @@ def _render_browse(clients_db: dict):
 
 # ── Main page ──────────────────────────────────────────────────────────────────
 def show():
-    st.title("👥 CLIENTS")
-    st.caption("Manage your client and contact database — shared with the Quotes form.")
+    if "cf_seed_company" not in st.session_state:
+        _reset_form()
+    if "client_form_open" not in st.session_state:
+        st.session_state["client_form_open"] = False
+
+    title_col, add_col = st.columns([5, 1.4])
+    with title_col:
+        st.title("👥 CLIENTS")
+        st.caption("Manage your client and contact database — shared with the Quotes form.")
+    with add_col:
+        st.markdown("<div style='height:22px'></div>", unsafe_allow_html=True)
+        st.button(
+            "➕ Add client", type="primary", use_container_width=True,
+            on_click=_handle_add_client_click,
+        )
 
     _show_flash()
 
-    if "cf_seed_company" not in st.session_state:
-        _reset_form()
-
     clients_db = _load_db()
 
-    _render_form(clients_db)
-    st.divider()
+    if st.session_state["client_form_open"]:
+        _render_form(clients_db)
+        st.divider()
+
     _render_browse(clients_db)
