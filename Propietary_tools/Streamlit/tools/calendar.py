@@ -162,11 +162,11 @@ def _cancel_editing():
     st.session_state.pop("cal_editing", None)
 
 
-# ── Next upcoming reminder (shown regardless of which date is selected) ────────
-def _next_upcoming_reminder(events: list, today: date):
-    """Returns (date, event, reminder) for the closest NOT-done reminder whose
-    date is today or in the future, or None if there is none. If several
-    reminders share the same closest date, the first one found is returned."""
+# ── Next upcoming reminders (shown regardless of which date is selected) ───────
+def _upcoming_reminders(events: list, today: date, limit: int = 5) -> list:
+    """Returns a list of (date, event, reminder) for NOT-done reminders whose
+    date is today or in the future, sorted by date ascending (soonest
+    first), capped at `limit` items."""
     upcoming = []
     for e in events:
         for rem in e.get("reminders", []):
@@ -178,17 +178,15 @@ def _next_upcoming_reminder(events: list, today: date):
                 continue
             if d >= today:
                 upcoming.append((d, e, rem))
-    if not upcoming:
-        return None
     upcoming.sort(key=lambda triple: triple[0])
-    return upcoming[0]
+    return upcoming[:limit]
 
 
-# ── Next upcoming event (shown regardless of which date is selected) ───────────
-def _next_upcoming_event(events: list, today: date):
-    """Returns (date, event) for the closest event whose date is today or in
-    the future, or None if there are no upcoming events. If several events
-    share the same closest date, the first one found is returned."""
+# ── Next upcoming events (shown regardless of which date is selected) ──────────
+def _upcoming_events(events: list, today: date, limit: int = 5) -> list:
+    """Returns a list of (date, event) for events whose date is today or in
+    the future, sorted by date ascending (soonest first), capped at
+    `limit` items."""
     upcoming = []
     for e in events:
         try:
@@ -197,10 +195,8 @@ def _next_upcoming_event(events: list, today: date):
             continue
         if d >= today:
             upcoming.append((d, e))
-    if not upcoming:
-        return None
     upcoming.sort(key=lambda pair: pair[0])
-    return upcoming[0]
+    return upcoming[:limit]
 
 
 def _render_next_event(events: list):
@@ -209,14 +205,13 @@ def _render_next_event(events: list):
 
     col_ev, col_rem = st.columns(2)
 
-    # ── Next event ────────────────────────────────────────────────────────────
+    # ── Upcoming events (soonest first) ──────────────────────────────────────
     with col_ev:
-        st.markdown("### ⏭️ Next upcoming event")
-        result = _next_upcoming_event(events, today)
-        if result is None:
+        st.markdown("### ⏭️ Next upcoming events")
+        upcoming_events = _upcoming_events(events, today)
+        if not upcoming_events:
             st.caption("No upcoming events.")
-        else:
-            ev_date, e = result
+        for ev_date, e in upcoming_events:
             days_until = (ev_date - today).days
             if days_until == 0:
                 when_label = "Today"
@@ -240,18 +235,17 @@ def _render_next_event(events: list):
                     if e.get("notes"):
                         st.caption(e["notes"])
                 with c2:
-                    if st.button("📆 View day", key="cal_goto_next_event", use_container_width=True):
+                    if st.button("📆 View day", key=f"cal_goto_event_{e['id']}", use_container_width=True):
                         st.session_state["cal_selected_date"] = e["date"]
                         st.rerun()
 
-    # ── Next reminder ─────────────────────────────────────────────────────────
+    # ── Upcoming reminders (soonest first) ───────────────────────────────────
     with col_rem:
-        st.markdown("### 🔔 Next upcoming reminder")
-        result = _next_upcoming_reminder(events, today)
-        if result is None:
+        st.markdown("### 🔔 Next upcoming reminders")
+        upcoming_reminders = _upcoming_reminders(events, today)
+        if not upcoming_reminders:
             st.caption("No upcoming reminders.")
-        else:
-            rem_date, e, rem = result
+        for rem_date, e, rem in upcoming_reminders:
             days_until = (rem_date - today).days
             if days_until == 0:
                 when_label = "Today"
@@ -271,7 +265,7 @@ def _render_next_event(events: list):
                     if e.get("client"):
                         st.caption(f"🏢 {e['client']}")
                 with c2:
-                    if st.button("📆 View day", key="cal_goto_next_reminder", use_container_width=True):
+                    if st.button("📆 View day", key=f"cal_goto_reminder_{rem['id']}", use_container_width=True):
                         st.session_state["cal_selected_date"] = rem["date"]
                         st.rerun()
 
