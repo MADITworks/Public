@@ -528,10 +528,22 @@ def show():
             m = 1
             y += 1
 
-    month_cols = st.columns(4)
-    for col, (yy, mm) in zip(month_cols, months_to_show):
-        with col:
-            _render_month(yy, mm, day_index, st.session_state["cal_selected_date"], today)
+    for row_start in range(0, len(months_to_show), 2):
+        row_months = months_to_show[row_start:row_start + 2]
+        if len(row_months) == 2:
+            col_left, col_gap, col_right = st.columns([5, 0.4, 5])
+            with col_left:
+                _render_month(*row_months[0], day_index, st.session_state["cal_selected_date"], today)
+            with col_right:
+                _render_month(*row_months[1], day_index, st.session_state["cal_selected_date"], today)
+        else:
+            _, center_col, _ = st.columns([1, 2, 1])
+            with center_col:
+                _render_month(*row_months[0], day_index, st.session_state["cal_selected_date"], today)
+
+        if row_start + 2 < len(months_to_show):
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            st.divider()
 
     _render_day_detail(events, st.session_state["cal_selected_date"])
     _render_event_form(clients_db)
