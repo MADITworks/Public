@@ -1,18 +1,10 @@
-import calendar as _calmod
 import uuid
 from datetime import date, datetime
 
 import streamlit as st
 
-try:
-    from quotes_repo import load_clients_db
-except ModuleNotFoundError:
-    from tools.quotes_repo import load_clients_db
-
-try:
-    import calendar_repo
-except ModuleNotFoundError:
-    from tools import calendar_repo
+from tools.quotes_repo import load_clients_db
+from tools import calendar_repo
 
 
 FREE_TEXT_LABEL = "✏️ Otro / no registrado..."
@@ -25,13 +17,26 @@ def _gen_id() -> str:
     return uuid.uuid4().hex[:10]
 
 
+def _days_in_month(year: int, month: int) -> int:
+    if month == 12:
+        next_month_first = date(year + 1, 1, 1)
+    else:
+        next_month_first = date(year, month + 1, 1)
+    return (next_month_first - date(year, month, 1)).days
+
+
+def _first_weekday(year: int, month: int) -> int:
+    """Lunes=0 ... Domingo=6 (igual que date.weekday())."""
+    return date(year, month, 1).weekday()
+
+
 def _subtract_months(d: date, months: int) -> date:
     month = d.month - months
     year  = d.year
     while month <= 0:
         month += 12
         year  -= 1
-    last_day = _calmod.monthrange(year, month)[1]
+    last_day = _days_in_month(year, month)
     day      = min(d.day, last_day)
     return d.replace(year=year, month=month, day=day)
 
@@ -368,7 +373,8 @@ def _render_month(year: int, month: int, day_index: dict, selected_date_str: str
                 unsafe_allow_html=True,
             )
 
-    first_weekday, days_in_month = _calmod.monthrange(year, month)  # Monday=0
+    first_weekday = _first_weekday(year, month)  # Lunes=0
+    days_in_month = _days_in_month(year, month)
     week_cells = [""] * first_weekday
     for d in range(1, days_in_month + 1):
         week_cells.append(d)
