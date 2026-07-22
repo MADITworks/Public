@@ -23,8 +23,10 @@ def _repo_base():
 
 
 # ── Carpeta base dentro del repo ────────────────────────────────────────────────
-# Todo lo relativo a esta app (Quotes/ y Clients/) cuelga de esta carpeta,
-# en vez de la raíz del repo.
+# Solo lo relativo a QUOTES cuelga de aquí. La gestión de clientes
+# (Clients/clients.json) ya NO vive en este módulo — ver clients_lookup.py
+# para el único punto de lectura (solo-lectura) que usa Quotes, y el módulo
+# Clientes para todo el CRUD real.
 BASE_PATH = "Propietary_tools"
 
 
@@ -44,7 +46,12 @@ DEFAULT_STATUS  = STATUS_SENT
 # ── Organización por cliente ─────────────────────────────────────────────────────
 def _client_folder(client: str) -> str:
     """Sanitiza el nombre del cliente para usarlo como carpeta en GitHub
-    (ej. 'DCS' -> 'DCS', 'M.A.D. Group' -> 'M-A-D-_Group')."""
+    (ej. 'DCS' -> 'DCS', 'M.A.D. Group' -> 'M-A-D-_Group').
+
+    NOTA: esto es puramente una sanitización de string para nombrar carpetas
+    dentro de Quotes/ — no consulta ni depende del módulo Clientes. El
+    "client" que llega aquí es simplemente el string ya validado en el
+    Paso 1 (client_contact_step.py) contra la lista de clientes existentes."""
     name = (client or "Unknown").strip()
     name = re.sub(r"[^A-Za-z0-9 _-]", "-", name)
     name = re.sub(r"\s+", " ", name).strip()
@@ -165,12 +172,19 @@ def save_quote(
       {BASE_PATH}/Quotes/{Cliente}/data/{id}.json
     - Añade / actualiza la entrada en el índice global
       {BASE_PATH}/Quotes/index.json (usado por el historial/filtros de la app).
+      El campo "client" de esta entrada es el que usa _show_history() en
+      quotes.py para agrupar — eso no cambia.
     - Si se está actualizando una oferta y el cliente cambió, borra los
       archivos antiguos para no dejar duplicados fuera de su carpeta correcta.
     - El campo "status" (Sent/Accepted/Rejected/Expired) se preserva si ya
       existía (edición de una quote guardada), o se pone a "Sent" por
       defecto si es una quote nueva. Para cambiar el estado explícitamente
       usa set_quote_status(), no este método.
+
+    NOTA: 'client' y 'contact' aquí son strings ya validados contra el
+    módulo Clientes en el Paso 1 (client_contact_step.py + clients_lookup.py)
+    — esta función no valida ni crea nada en clients.json, solo los usa
+    como texto para organizar/etiquetar la quote.
     """
     is_update = record_id is not None
     rid = record_id or datetime.now().strftime("%Y%m%d%H%M%S")
@@ -272,10 +286,11 @@ def set_quote_status(record_id: str, status: str):
 
 # ── Cargar historial (resumen) ─────────────────────────────────────────────────
 def load_quotes() -> list:
-    """Devuelve todas las quotes guardadas (resumen para el listado del historial).
-    Las quotes guardadas antes de añadir el campo 'status' no lo tienen en su
-    JSON — quien consuma esta lista debe leerlo con
-    q.get("status", DEFAULT_STATUS) para que se traten como "Sent" por defecto."""
+    """Devuelve todas las quotes guardadas (resumen para el listado del historial,
+    incluido el agrupado por cliente en _show_history()). Las quotes guardadas
+    antes de añadir el campo 'status' no lo tienen en su JSON — quien consuma
+    esta lista debe leerlo con q.get("status", DEFAULT_STATUS) para que se
+    traten como "Sent" por defecto."""
     index, _ = _get_index()
     return index
 
@@ -294,195 +309,10 @@ def download_quote_excel(record: dict) -> bytes:
     return base64.b64decode(r.json()["content"])
 
 
-# ── Lista de clientes únicos (derivada del histórico de ofertas) ───────────────
+# ── Lista de clientes únicos (derivada del histórico de ofertas ya guardadas) ──
 def get_clients() -> list[str]:
+    """Clientes que YA tienen al menos una quote guardada — distinto de la
+    lista de clientes disponibles para crear una quote nueva (esa viene de
+    clients_lookup.load_clients_readonly(), no de aquí)."""
     index = load_quotes()
     return sorted(set(q["client"] for q in index if q.get("client")))
-
-
-# ── Base de datos de clientes / contactos ({BASE_PATH}/Clients/clients.json) ──
-def _clients_path() -> str:
-    return f"{BASE_PATH}/Clients/clients.json"
-
-
-def _get_clients_db() -> tuple[dict, str | None]:
-    """Lee {BASE_PATH}/Clients/clients.json. Devuelve (data, sha)."""
-    url = f"{_repo_base()}/contents/{_clients_path()}"
-    r   = requests.get(url, headers=_headers())
-    if r.status_code == 404:
-        return {}, None
-    r.raise_for_status()
-    content = base64.b64decode(r.json()["content"]).decode()
-    sha     = r.json()["sha"]
-    return json.loads(content), sha
-
-
-def _save_clients_db(data: dict, sha: str | None, message: str):
-    url     = f"{_repo_base()}/contents/{_clients_path()}"
-    content = base64.b64encode(
-        json.dumps(data, indent=2, ensure_ascii=False).encode()
-    ).decode()
-    payload = {"message": message, "content": content}
-    if sha:
-        payload["sha"] = sha
-    r = requests.put(url, headers=_headers(), json=payload)
-    r.raise_for_status()
-
-
-def load_clients_db() -> dict:
-    """
-    Devuelve {client_name: [{"contact": ..., "title": ..., "mobile": ...,
-    "email": ...}, ...]}.
-    Vacío si el archivo aún no existe. Registros antiguos sin "title"/"mobile"
-    siguen funcionando (se leen como cadena vacía).
-    """
-    data, _ = _get_clients_db()
-    return data
-
-
-def upsert_client_contact(client: str, contact: str, email: str, title: str = "", mobile: str = ""):
-    """
-    Añade el cliente/contacto si no existe, o actualiza título/móvil/email si el
-    contacto ya existía con datos distintos. No falla si todos los campos de
-    contacto vienen vacíos (simplemente no agrega una entrada sin nombre).
-    """
-    client = (client or "").strip()
-    if not client:
-        return
-
-    contact = (contact or "").strip()
-    email   = (email or "").strip()
-    title   = (title or "").strip()
-    mobile  = (mobile or "").strip()
-
-    data, sha = _get_clients_db()
-    contacts = data.get(client, [])
-
-    found = False
-    for c in contacts:
-        if c.get("contact", "").strip().lower() == contact.lower():
-            if email and c.get("email") != email:
-                c["email"] = email
-            if title and c.get("title") != title:
-                c["title"] = title
-            if mobile and c.get("mobile") != mobile:
-                c["mobile"] = mobile
-            found = True
-            break
-
-    if not found and (contact or email or title or mobile):
-        contacts.append({
-            "contact": contact,
-            "email":   email,
-            "title":   title,
-            "mobile":  mobile,
-        })
-
-    data[client] = contacts
-    _save_clients_db(data, sha, f"Update client contacts for {client}")
-
-
-# ── CRUD adicional para la página de administración de clientes (Clients.py) ──
-def create_client_company(client: str):
-    """Crea una empresa vacía (sin contactos todavía) si aún no existe."""
-    client = (client or "").strip()
-    if not client:
-        return
-    data, sha = _get_clients_db()
-    if client not in data:
-        data[client] = []
-        _save_clients_db(data, sha, f"Create client company {client}")
-
-
-def rename_client_company(old_name: str, new_name: str):
-    """Renombra una empresa. Si ya existe una empresa con el nuevo nombre,
-    fusiona los contactos (evitando duplicados por nombre de contacto)."""
-    old_name = (old_name or "").strip()
-    new_name = (new_name or "").strip()
-    if not old_name or not new_name or old_name == new_name:
-        return
-
-    data, sha = _get_clients_db()
-    if old_name not in data:
-        return
-
-    contacts = data.pop(old_name)
-    existing = data.get(new_name, [])
-    existing_names = {c.get("contact", "").strip().lower() for c in existing}
-    for c in contacts:
-        if c.get("contact", "").strip().lower() not in existing_names:
-            existing.append(c)
-    data[new_name] = existing
-    _save_clients_db(data, sha, f"Rename client company {old_name} -> {new_name}")
-
-
-def delete_client_company(client: str):
-    """Borra una empresa completa junto con todos sus contactos."""
-    client = (client or "").strip()
-    data, sha = _get_clients_db()
-    if client in data:
-        del data[client]
-        _save_clients_db(data, sha, f"Delete client company {client}")
-
-
-def delete_client_contact(client: str, contact: str):
-    """Borra un contacto específico dentro de una empresa (la empresa
-    permanece, aunque quede sin contactos)."""
-    client  = (client or "").strip()
-    contact = (contact or "").strip()
-    data, sha = _get_clients_db()
-    contacts = data.get(client, [])
-    new_contacts = [c for c in contacts if c.get("contact", "").strip().lower() != contact.lower()]
-    if len(new_contacts) != len(contacts):
-        data[client] = new_contacts
-        _save_clients_db(data, sha, f"Delete contact {contact} from {client}")
-
-
-def update_client_contact(
-    client:      str,
-    old_contact: str,
-    new_contact: str,
-    email:       str = "",
-    title:       str = "",
-    mobile:      str = "",
-):
-    """
-    Crea o actualiza (incluyendo renombrar) un contacto dentro de una empresa.
-    - Si 'old_contact' viene vacío -> se trata como contacto nuevo.
-    - Si 'old_contact' viene lleno -> busca ese contacto y lo actualiza,
-      incluyendo el posible cambio de nombre a 'new_contact'.
-    """
-    client = (client or "").strip()
-    if not client:
-        return
-
-    old_contact = (old_contact or "").strip()
-    new_contact = (new_contact or "").strip()
-    email       = (email or "").strip()
-    title       = (title or "").strip()
-    mobile      = (mobile or "").strip()
-
-    data, sha = _get_clients_db()
-    contacts = data.get(client, [])
-
-    updated = False
-    if old_contact:
-        for c in contacts:
-            if c.get("contact", "").strip().lower() == old_contact.lower():
-                c["contact"] = new_contact or old_contact
-                c["email"]   = email
-                c["title"]   = title
-                c["mobile"]  = mobile
-                updated = True
-                break
-
-    if not updated and (new_contact or email or title or mobile):
-        contacts.append({
-            "contact": new_contact,
-            "email":   email,
-            "title":   title,
-            "mobile":  mobile,
-        })
-
-    data[client] = contacts
-    _save_clients_db(data, sha, f"Update contact for {client}")
