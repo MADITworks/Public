@@ -48,7 +48,14 @@ Public surface:
 
 import streamlit as st
 
-import clients_lookup
+try:
+    # Caso normal: clients_lookup.py está en la MISMA carpeta que este
+    # archivo (client_contact_step.py) — p.ej. dentro de tools/.
+    import clients_lookup
+except ModuleNotFoundError:
+    # Fallback si este archivo se importó como tools.client_contact_step
+    # (ver quotes.py) y clients_lookup.py vive dentro del paquete tools/.
+    from tools import clients_lookup
 
 
 # Draft widget keys used inside the Client & Contact form. Nothing here is
