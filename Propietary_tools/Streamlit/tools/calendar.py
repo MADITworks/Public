@@ -162,6 +162,28 @@ def _cancel_editing():
     st.session_state.pop("cal_editing", None)
 
 
+# ── Next upcoming reminder (shown regardless of which date is selected) ────────
+def _next_upcoming_reminder(events: list, today: date):
+    """Returns (date, event, reminder) for the closest NOT-done reminder whose
+    date is today or in the future, or None if there is none. If several
+    reminders share the same closest date, the first one found is returned."""
+    upcoming = []
+    for e in events:
+        for rem in e.get("reminders", []):
+            if rem.get("done"):
+                continue
+            try:
+                d = _parse_date(rem.get("date", ""))
+            except (ValueError, TypeError):
+                continue
+            if d >= today:
+                upcoming.append((d, e, rem))
+    if not upcoming:
+        return None
+    upcoming.sort(key=lambda triple: triple[0])
+    return upcoming[0]
+
+
 # ── Next upcoming event (shown regardless of which date is selected) ───────────
 def _next_upcoming_event(events: list, today: date):
     """Returns (date, event) for the closest event whose date is today or in
@@ -183,40 +205,75 @@ def _next_upcoming_event(events: list, today: date):
 
 def _render_next_event(events: list):
     st.divider()
-    st.markdown("### ⏭️ Next upcoming event")
+    today = date.today()
 
-    result = _next_upcoming_event(events, date.today())
-    if result is None:
-        st.caption("No upcoming events.")
-        return
+    col_ev, col_rem = st.columns(2)
 
-    ev_date, e = result
-    days_until = (ev_date - date.today()).days
-    if days_until == 0:
-        when_label = "Today"
-    elif days_until == 1:
-        when_label = "Tomorrow"
-    else:
-        when_label = f"in {days_until} days"
+    # ── Next event ────────────────────────────────────────────────────────────
+    with col_ev:
+        st.markdown("### ⏭️ Next upcoming event")
+        result = _next_upcoming_event(events, today)
+        if result is None:
+            st.caption("No upcoming events.")
+        else:
+            ev_date, e = result
+            days_until = (ev_date - today).days
+            if days_until == 0:
+                when_label = "Today"
+            elif days_until == 1:
+                when_label = "Tomorrow"
+            else:
+                when_label = f"in {days_until} days"
 
-    with st.container(border=True):
-        c1, c2 = st.columns([5, 1.4])
-        with c1:
-            st.markdown(f"**{e.get('event_name', '')}**")
-            st.caption(f"📅 {e.get('date', '')}  ·  {when_label}")
-            sub = []
-            if e.get("client"):
-                sub.append(f"🏢 {e['client']}")
-            if e.get("contact"):
-                sub.append(f"👤 {e['contact']}")
-            if sub:
-                st.caption(" · ".join(sub))
-            if e.get("notes"):
-                st.caption(e["notes"])
-        with c2:
-            if st.button("📆 View day", key="cal_goto_next_event", use_container_width=True):
-                st.session_state["cal_selected_date"] = e["date"]
-                st.rerun()
+            with st.container(border=True):
+                c1, c2 = st.columns([5, 1.4])
+                with c1:
+                    st.markdown(f"**{e.get('event_name', '')}**")
+                    st.caption(f"📅 {e.get('date', '')}  ·  {when_label}")
+                    sub = []
+                    if e.get("client"):
+                        sub.append(f"🏢 {e['client']}")
+                    if e.get("contact"):
+                        sub.append(f"👤 {e['contact']}")
+                    if sub:
+                        st.caption(" · ".join(sub))
+                    if e.get("notes"):
+                        st.caption(e["notes"])
+                with c2:
+                    if st.button("📆 View day", key="cal_goto_next_event", use_container_width=True):
+                        st.session_state["cal_selected_date"] = e["date"]
+                        st.rerun()
+
+    # ── Next reminder ─────────────────────────────────────────────────────────
+    with col_rem:
+        st.markdown("### 🔔 Next upcoming reminder")
+        result = _next_upcoming_reminder(events, today)
+        if result is None:
+            st.caption("No upcoming reminders.")
+        else:
+            rem_date, e, rem = result
+            days_until = (rem_date - today).days
+            if days_until == 0:
+                when_label = "Today"
+            elif days_until == 1:
+                when_label = "Tomorrow"
+            else:
+                when_label = f"in {days_until} days"
+
+            with st.container(border=True):
+                c1, c2 = st.columns([5, 1.4])
+                with c1:
+                    st.markdown(f"**{e.get('event_name', '')}**")
+                    st.caption(
+                        f"🔔 {rem.get('date', '')}  ·  {when_label}"
+                        f"  ·  event on {e.get('date', '')}"
+                    )
+                    if e.get("client"):
+                        st.caption(f"🏢 {e['client']}")
+                with c2:
+                    if st.button("📆 View day", key="cal_goto_next_reminder", use_container_width=True):
+                        st.session_state["cal_selected_date"] = rem["date"]
+                        st.rerun()
 
 
 # ── Pending reminders banner ─────────────────────────────────────────────────────
