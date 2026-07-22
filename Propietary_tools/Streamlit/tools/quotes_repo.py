@@ -28,6 +28,19 @@ def _repo_base():
 BASE_PATH = "Propietary_tools"
 
 
+# ── Estados posibles de una quote ────────────────────────────────────────────────
+# "Sent" es el valor por defecto: se asigna automáticamente a las quotes
+# nuevas y también es lo que se devuelve para cualquier quote guardada ANTES
+# de este cambio (no tienen la clave "status" en su JSON, así que se leen
+# como "Sent" sin necesidad de migrar nada a mano).
+STATUS_SENT     = "Sent"
+STATUS_ACCEPTED = "Accepted"
+STATUS_REJECTED = "Rejected"
+STATUS_EXPIRED  = "Expired"
+STATUS_CHOICES  = [STATUS_SENT, STATUS_ACCEPTED, STATUS_REJECTED, STATUS_EXPIRED]
+DEFAULT_STATUS  = STATUS_SENT
+
+
 # ── Organización por cliente ─────────────────────────────────────────────────────
 def _client_folder(client: str) -> str:
     """Sanitiza el nombre del cliente para usarlo como carpeta en GitHub
@@ -154,6 +167,10 @@ def save_quote(
       {BASE_PATH}/Quotes/index.json (usado por el historial/filtros de la app).
     - Si se está actualizando una oferta y el cliente cambió, borra los
       archivos antiguos para no dejar duplicados fuera de su carpeta correcta.
+    - El campo "status" (Sent/Accepted/Rejected/Expired) se preserva si ya
+      existía (edición de una quote guardada), o se pone a "Sent" por
+      defecto si es una quote nueva. Para cambiar el estado explícitamente
+      usa set_quote_status(), no este método.
     """
     is_update = record_id is not None
     rid = record_id or datetime.now().strftime("%Y%m%d%H%M%S")
@@ -179,6 +196,16 @@ def save_quote(
     cost_total = round(float(items["Total Cost"].sum()), 2)
     sell_total = round(float(cost_total / (1 - margin_pct / 100)), 2)
 
+    # Índice (resumen)
+    index, sha = _get_index()
+    old_record = None
+    if is_update:
+        old_record = next((r for r in index if r.get("id") == rid), None)
+        index = [r for r in index if r.get("id") != rid]
+
+    # Preserva el estado existente al editar; por defecto "Sent" si es nueva.
+    status = (old_record.get("status", DEFAULT_STATUS) if old_record else DEFAULT_STATUS)
+
     record = {
         "id":             rid,
         "date":           date,
@@ -195,17 +222,12 @@ def save_quote(
         "margin_pct":     margin_pct,
         "cost_total":     cost_total,
         "sell_total":     sell_total,
+        "status":         status,
         "filename":       filename,     # nombre de archivo (display)
         "excel_path":     excel_path,   # ruta completa dentro del repo
         "detail_path":    detail_path,  # ruta completa del detalle
     }
 
-    # Índice (resumen)
-    index, sha = _get_index()
-    old_record = None
-    if is_update:
-        old_record = next((r for r in index if r.get("id") == rid), None)
-        index = [r for r in index if r.get("id") != rid]
     index.append(record)
     _save_index(index, sha, f"{'Update' if is_update else 'Add'} quote {quote_num} for {client}")
 
@@ -230,9 +252,30 @@ def save_quote(
     return record
 
 
+# ── Cambiar solo el estado de una quote ya guardada ─────────────────────────────
+def set_quote_status(record_id: str, status: str):
+    """Actualiza únicamente el campo 'status' de una quote en el índice
+    (Sent / Accepted / Rejected / Expired). No toca el Excel ni el detalle
+    completo — solo reescribe index.json con un único commit."""
+    if status not in STATUS_CHOICES:
+        raise ValueError(f"Invalid status '{status}'. Must be one of {STATUS_CHOICES}")
+
+    index, sha = _get_index()
+    changed = False
+    for r in index:
+        if r.get("id") == record_id:
+            r["status"] = status
+            changed = True
+    if changed:
+        _save_index(index, sha, f"Set status={status} for quote {record_id}")
+
+
 # ── Cargar historial (resumen) ─────────────────────────────────────────────────
 def load_quotes() -> list:
-    """Devuelve todas las quotes guardadas (resumen para el listado del historial)."""
+    """Devuelve todas las quotes guardadas (resumen para el listado del historial).
+    Las quotes guardadas antes de añadir el campo 'status' no lo tienen en su
+    JSON — quien consuma esta lista debe leerlo con
+    q.get("status", DEFAULT_STATUS) para que se traten como "Sent" por defecto."""
     index, _ = _get_index()
     return index
 
