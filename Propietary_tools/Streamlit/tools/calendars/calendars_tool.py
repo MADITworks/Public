@@ -162,120 +162,92 @@ def _cancel_editing():
     st.session_state.pop("cal_editing", None)
 
 
-# ── Next upcoming reminders (shown regardless of which date is selected) ───────
-def _upcoming_reminders(events: list, today: date, limit: int = 5) -> list:
-    """Returns a list of (date, event, reminder) for NOT-done reminders whose
-    date is today or in the future, sorted by date ascending (soonest
-    first), capped at `limit` items."""
-    upcoming = []
-    for e in events:
-        for rem in e.get("reminders", []):
-            if rem.get("done"):
-                continue
-            try:
-                d = _parse_date(rem.get("date", ""))
-            except (ValueError, TypeError):
-                continue
-            if d >= today:
-                upcoming.append((d, e, rem))
-    upcoming.sort(key=lambda triple: triple[0])
-    return upcoming[:limit]
-
-
-# ── Next upcoming events (shown regardless of which date is selected) ──────────
-def _upcoming_events(events: list, today: date, limit: int = 5) -> list:
-    """Returns a list of (date, event) for events whose date is today or in
-    the future, sorted by date ascending (soonest first), capped at
-    `limit` items."""
-    upcoming = []
+# ── Unified upcoming list (events + reminders together, sorted by date) ───────
+def _upcoming_items(events: list, today: date, limit: int = 8) -> list:
+    """Returns a list of dicts, one per upcoming item (event OR reminder),
+    sorted by date ascending (soonest first), capped at `limit` items.
+    Each dict: {"date": date, "kind": "event"|"reminder", "event": e, "reminder": rem|None}
+    """
+    items = []
     for e in events:
         try:
             d = _parse_date(e.get("date", ""))
         except (ValueError, TypeError):
-            continue
-        if d >= today:
-            upcoming.append((d, e))
-    upcoming.sort(key=lambda pair: pair[0])
-    return upcoming[:limit]
+            d = None
+        if d and d >= today:
+            items.append({"date": d, "kind": "event", "event": e, "reminder": None})
+
+        for rem in e.get("reminders", []):
+            if rem.get("done"):
+                continue
+            try:
+                rd = _parse_date(rem.get("date", ""))
+            except (ValueError, TypeError):
+                continue
+            if rd >= today:
+                items.append({"date": rd, "kind": "reminder", "event": e, "reminder": rem})
+
+    items.sort(key=lambda it: it["date"])
+    return items[:limit]
 
 
 def _render_next_event(events: list):
     st.divider()
     today = date.today()
 
-    col_ev, col_rem = st.columns(2)
+    st.markdown("### ⏭️ Next upcoming events & reminders")
 
-    # ── Upcoming events (soonest first) ──────────────────────────────────────
-    with col_ev:
-        st.markdown("### ⏭️ Next upcoming events")
-        upcoming_events = _upcoming_events(events, today)
-        if not upcoming_events:
-            st.caption("No upcoming events.")
-        for ev_date, e in upcoming_events:
-            days_until = (ev_date - today).days
-            if days_until == 0:
-                when_label = "Today"
-            elif days_until == 1:
-                when_label = "Tomorrow"
-            else:
-                when_label = f"in {days_until} days"
+    upcoming = _upcoming_items(events, today)
+    if not upcoming:
+        st.caption("No upcoming events or reminders.")
+        return
 
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([4, 1, 1])
-                with c1:
-                    st.markdown(f"**{e.get('event_name', '')}**")
+    for item in upcoming:
+        item_date = item["date"]
+        e         = item["event"]
+        rem       = item["reminder"]
+        is_event  = item["kind"] == "event"
+
+        days_until = (item_date - today).days
+        if days_until == 0:
+            when_label = "Today"
+        elif days_until == 1:
+            when_label = "Tomorrow"
+        else:
+            when_label = f"in {days_until} days"
+
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([4.5, 1, 1])
+            with c1:
+                tag = "📅 Event" if is_event else "🔔 Reminder"
+                st.markdown(f"**{tag} · {e.get('event_name', '')}**")
+                if is_event:
                     st.caption(f"📅 {e.get('date', '')}  ·  {when_label}")
-                    sub = []
-                    if e.get("client"):
-                        sub.append(f"🏢 {e['client']}")
-                    if e.get("contact"):
-                        sub.append(f"👤 {e['contact']}")
-                    if sub:
-                        st.caption(" · ".join(sub))
-                    if e.get("notes"):
-                        st.caption(e["notes"])
-                with c2:
-                    if st.button("✏️ Edit", key=f"cal_edit_upcoming_event_{e['id']}", use_container_width=True):
-                        _start_edit_event(e)
-                        st.rerun()
-                with c3:
-                    if st.button("📆 View day", key=f"cal_goto_event_{e['id']}", use_container_width=True):
-                        st.session_state["cal_selected_date"] = e["date"]
-                        st.rerun()
-
-    # ── Upcoming reminders (soonest first) ───────────────────────────────────
-    with col_rem:
-        st.markdown("### 🔔 Next upcoming reminders")
-        upcoming_reminders = _upcoming_reminders(events, today)
-        if not upcoming_reminders:
-            st.caption("No upcoming reminders.")
-        for rem_date, e, rem in upcoming_reminders:
-            days_until = (rem_date - today).days
-            if days_until == 0:
-                when_label = "Today"
-            elif days_until == 1:
-                when_label = "Tomorrow"
-            else:
-                when_label = f"in {days_until} days"
-
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([4, 1, 1])
-                with c1:
-                    st.markdown(f"**{e.get('event_name', '')}**")
+                else:
                     st.caption(
                         f"🔔 {rem.get('date', '')}  ·  {when_label}"
                         f"  ·  event on {e.get('date', '')}"
                     )
-                    if e.get("client"):
-                        st.caption(f"🏢 {e['client']}")
-                with c2:
-                    if st.button("✏️ Edit", key=f"cal_edit_upcoming_reminder_{rem['id']}", use_container_width=True):
-                        _start_edit_event(e)
-                        st.rerun()
-                with c3:
-                    if st.button("📆 View day", key=f"cal_goto_reminder_{rem['id']}", use_container_width=True):
-                        st.session_state["cal_selected_date"] = rem["date"]
-                        st.rerun()
+                sub = []
+                if e.get("client"):
+                    sub.append(f"🏢 {e['client']}")
+                if e.get("contact"):
+                    sub.append(f"👤 {e['contact']}")
+                if sub:
+                    st.caption(" · ".join(sub))
+                if is_event and e.get("notes"):
+                    st.caption(e["notes"])
+            with c2:
+                edit_key = f"cal_edit_upcoming_{'event' if is_event else 'reminder'}_{e['id']}_{rem['id'] if rem else ''}"
+                if st.button("✏️ Edit", key=edit_key, use_container_width=True):
+                    _start_edit_event(e)
+                    st.rerun()
+            with c3:
+                goto_date = e["date"] if is_event else rem["date"]
+                goto_key  = f"cal_goto_upcoming_{'event' if is_event else 'reminder'}_{e['id']}_{rem['id'] if rem else ''}"
+                if st.button("📆 View day", key=goto_key, use_container_width=True):
+                    st.session_state["cal_selected_date"] = goto_date
+                    st.rerun()
 
 
 # ── Pending reminders banner ─────────────────────────────────────────────────────
@@ -372,7 +344,7 @@ def _render_attachments_section(editing: dict, fk: int):
     return uploaded_files
 
 
-# ── Event create / edit form ─────────────────────────────────────────────────────
+# ── Event create / edit form ──────────────────────────────────────���──────────────
 def _render_event_form(clients_db: dict):
     editing = st.session_state.get("cal_editing")
     if editing is None:
