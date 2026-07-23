@@ -140,6 +140,7 @@ def _reset_co_form():
     for key in CO_SEED_KEYS + CO_WIDGET_KEYS:
         st.session_state.pop(key, None)
     st.session_state.pop("co_addresses_editor", None)
+    st.session_state.pop("co_addresses_table", None)
     st.session_state["co_seed_name"]     = ""
     st.session_state["co_original_name"] = ""
 
@@ -158,6 +159,7 @@ def _handle_cancel_co_form():
 def _start_edit_company(company: str, info: dict):
     for key in CO_WIDGET_KEYS:
         st.session_state.pop(key, None)
+    st.session_state.pop("co_addresses_table", None)
     st.session_state["co_seed_name"]     = company
     st.session_state["co_original_name"] = company
     st.session_state["co_abn"]           = info.get("abn", "")
@@ -252,6 +254,56 @@ def _handle_delete_contact_row(company: str, contact_name: str):
 
 
 # ── Acciones — COMPANIES ─────────────────────────────────────────────────────
+def _extract_addresses_from_editor(raw) -> list[dict]:
+    """
+    st.session_state[<data_editor key>] puede venir como:
+    - un pandas DataFrame (comportamiento normal), o
+    - un dict con la forma {"edited_rows": {...}, "added_rows": [...],
+      "deleted_rows": [...]} en algunas versiones de Streamlit cuando se
+      lee directamente desde session_state en vez de la variable devuelta
+      por st.data_editor().
+    Esta función normaliza cualquiera de los dos casos a una lista plana
+    de dicts de direcciones.
+    """
+    cols = ["label", "line1", "line2", "city", "state", "zip", "country"]
+
+    if raw is None:
+        return []
+
+    # Caso normal: ya es un DataFrame.
+    if hasattr(raw, "to_dict"):
+        try:
+            return raw.fillna("").to_dict("records")
+        except Exception:
+            pass
+
+    # Caso dict estilo {"edited_rows": ..., "added_rows": ..., "deleted_rows": ...}
+    if isinstance(raw, dict) and ("added_rows" in raw or "edited_rows" in raw):
+        base = st.session_state.get("co_addresses_editor", [])
+        rows = [dict(r) for r in base]
+
+        for idx_str, changes in raw.get("edited_rows", {}).items():
+            idx = int(idx_str)
+            if idx < len(rows):
+                rows[idx].update(changes)
+
+        for new_row in raw.get("added_rows", []):
+            row = {c: "" for c in cols}
+            row.update(new_row)
+            rows.append(row)
+
+        deleted = set(raw.get("deleted_rows", []))
+        rows = [r for i, r in enumerate(rows) if i not in deleted]
+
+        return [{c: (r.get(c, "") or "") for c in cols} for r in rows]
+
+    # Caso lista de dicts directamente.
+    if isinstance(raw, list):
+        return raw
+
+    return []
+
+
 def _handle_save_company():
     name_choice = st.session_state.get("co_name_select", NEW_COMPANY_LABEL)
     name_val = (
@@ -263,7 +315,7 @@ def _handle_save_company():
         return
 
     original_name = st.session_state.get("co_original_name", "").strip()
-    addresses_df  = st.session_state.get("co_addresses_table")
+    addresses_raw = st.session_state.get("co_addresses_table")
 
     try:
         if original_name and original_name != name_val:
@@ -279,9 +331,8 @@ def _handle_save_company():
             notes=st.session_state.get("co_notes", "").strip(),
         )
 
-        if addresses_df is not None:
-            addresses_list = addresses_df.fillna("").to_dict("records")
-            clients_repo.set_company_addresses(name_val, addresses_list)
+        addresses_list = _extract_addresses_from_editor(addresses_raw)
+        clients_repo.set_company_addresses(name_val, addresses_list)
 
         _flash(f"✅ Company saved — {name_val}")
         _refresh_db()
@@ -625,7 +676,7 @@ def _render_address_form():
         st.button("✖ Cancel", use_container_width=True, on_click=_handle_cancel_address)
 
 
-# ── Browse / list — CONTACTS ─────────────────────────────────────────────────
+# ── Browse / list — CONTACTS ─────────────────────���───────────────────────────
 def _render_browse_contacts(clients_db: dict):
     st.markdown("### 📚 Contact Directory")
 
@@ -663,7 +714,7 @@ def _render_browse_contacts(clients_db: dict):
     if company_filter != "All companies":
         contacts = [c for c in clients_db.get(company_filter, []) if _matches_search(c)]
         st.markdown(f"**🏢 {company_filter}**  ·  {len(contacts)} contact(s)")
-        _render_contacts_table(contacts, show_company_col=False, company_for_actions=company_filter)
+        _render_contacts_table(contacts, company_for_actions=company_filter)
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         st.button(
@@ -714,32 +765,34 @@ def _render_browse_contacts(clients_db: dict):
             )
 
 
-def _render_contacts_table(contacts: list[dict], show_company_col: bool, company_for_actions: str):
+def _render_contacts_table(contacts: list[dict], company_for_actions: str):
     """Tabla plana de contactos (sin agrupar), usada cuando se filtra por
     una empresa específica."""
     if not contacts:
         st.caption("No contacts match your search for this company.")
         return
 
-    row_widths = [1.7, 1.3, 2.2, 0.55, 0.55]
-    hc1, hc2, hc3, hc4, hc5 = st.columns(row_widths)
+    row_widths = [1.7, 1.3, 1.3, 2.2, 0.55, 0.55]
+    hc1, hc2, hc3, hc4, hc5, hc6 = st.columns(row_widths)
     hc1.markdown("**Contact**")
     hc2.markdown("**Title**")
-    hc3.markdown("**Email**")
-    hc4.markdown("")
+    hc3.markdown("**Mobile**")
+    hc4.markdown("**Email**")
     hc5.markdown("")
+    hc6.markdown("")
 
     for i, c in enumerate(contacts):
-        c1, c2, c3, c4, c5 = st.columns(row_widths)
+        c1, c2, c3, c4, c5, c6 = st.columns(row_widths)
         c1.write(c.get("contact", "") or "—")
         c2.write(c.get("title", "") or "—")
-        c3.write(c.get("email", "") or "—")
-        with c4:
+        c3.write(c.get("mobile", "") or "—")
+        c4.write(c.get("email", "") or "—")
+        with c5:
             st.button(
                 "✏️", key=f"edit_{company_for_actions}_{i}", use_container_width=True,
                 on_click=_start_edit, args=(company_for_actions, c),
             )
-        with c5:
+        with c6:
             st.button(
                 "🗑️", key=f"delcontact_{company_for_actions}_{i}", use_container_width=True,
                 on_click=_handle_delete_contact_row, args=(company_for_actions, c.get("contact", "")),
