@@ -49,7 +49,7 @@ def _fmt_date(d: date) -> str:
     return d.strftime("%d/%m/%Y")
 
 
-# ── Flash messages ─────────────────────────────────────────────────────────────
+# ── Flash messages ───────────────────────��─────────────────────────────────────
 def _flash(msg: str, kind: str = "success"):
     st.session_state["_cal_flash"] = (kind, msg)
 
@@ -344,7 +344,7 @@ def _render_attachments_section(editing: dict, fk: int):
     return uploaded_files
 
 
-# ── Event create / edit form ──────────────────────────────────────���──────────────
+# ── Event create / edit form ─────────────────────────────────────────────────────
 def _render_event_form(clients_db: dict):
     editing = st.session_state.get("cal_editing")
     if editing is None:
@@ -555,7 +555,7 @@ def _render_month(year: int, month: int, day_index: dict, selected_date_str: str
         _render_week(week_cells, year, month, day_index, selected_date_str, today)
 
 
-# ── Navigation across 4-month blocks ─────────────────────────────────────────────
+# ── Navigation across 2-month blocks ─────────────────────────────────────────────
 def _shift_block(delta_months: int):
     y = st.session_state["cal_start_year"]
     m = st.session_state["cal_start_month"] + delta_months
@@ -574,23 +574,29 @@ def _render_nav():
         st.session_state["cal_start_year"]  = date.today().year
         st.session_state["cal_start_month"] = date.today().month
 
-    nav1, nav2, nav3, nav4, _ = st.columns([1, 1, 1.4, 1.4, 3])
+    nav1, nav2, nav3, nav4, nav5, _ = st.columns([1, 1, 1, 1.4, 1.4, 2.6])
     with nav1:
         if st.button("← Previous", use_container_width=True):
-            _shift_block(-4)
+            _shift_block(-2)
             st.rerun()
     with nav2:
         if st.button("Next →", use_container_width=True):
-            _shift_block(4)
+            _shift_block(2)
             st.rerun()
     with nav3:
+        if st.button("📍 Today", use_container_width=True):
+            st.session_state["cal_start_year"]  = date.today().year
+            st.session_state["cal_start_month"] = date.today().month
+            st.session_state["cal_selected_date"] = _fmt_date(date.today())
+            st.rerun()
+    with nav4:
         years = list(range(date.today().year - 5, date.today().year + 6))
         y_idx = years.index(st.session_state["cal_start_year"]) if st.session_state["cal_start_year"] in years else years.index(date.today().year)
         sel_year = st.selectbox("Start year", years, index=y_idx, key="cal_year_select")
         if sel_year != st.session_state["cal_start_year"]:
             st.session_state["cal_start_year"] = sel_year
             st.rerun()
-    with nav4:
+    with nav5:
         m_idx = st.session_state["cal_start_month"] - 1
         sel_month_name = st.selectbox("Start month", MONTH_NAMES, index=m_idx, key="cal_month_select")
         new_month_num = MONTH_NAMES.index(sel_month_name) + 1
@@ -706,7 +712,7 @@ def show():
 
     months_to_show = []
     y, m = start_year, start_month
-    for _ in range(4):
+    for _ in range(2):
         months_to_show.append((y, m))
         m += 1
         if m > 12:
