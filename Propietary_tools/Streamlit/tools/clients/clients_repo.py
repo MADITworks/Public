@@ -243,7 +243,8 @@ def add_company_address(
     country:  str = "",
 ):
     """Añade una nueva dirección a la lista de direcciones de una empresa
-    (una empresa puede tener varias: Billing, Shipping, etc.)."""
+    (una empresa puede tener varias: Billing, Shipping, distintos edificios,
+    etc.)."""
     client = (client or "").strip()
     if not client:
         return
@@ -298,6 +299,42 @@ def delete_company_address(client: str, index: int):
     if 0 <= index < len(addresses):
         addresses.pop(index)
         _save_full_db(data, sha, f"Delete address #{index} from {client}")
+
+
+def set_company_addresses(client: str, addresses: list[dict]):
+    """Reemplaza la lista COMPLETA de direcciones de una empresa de una sola
+    vez. Usado por el formulario de edición de empresa, que gestiona todas
+    las direcciones como una tabla editable (múltiples edificios, cada uno
+    con su propio label) y las guarda todas juntas al pulsar Save."""
+    client = (client or "").strip()
+    if not client:
+        return
+    data, sha = _get_full_db()
+    company = data["companies"].setdefault(client, _empty_company())
+    clean = []
+    for a in addresses:
+        label = (a.get("label", "") or "").strip()
+        line1 = (a.get("line1", "") or "").strip()
+        line2 = (a.get("line2", "") or "").strip()
+        city  = (a.get("city", "") or "").strip()
+        state = (a.get("state", "") or "").strip()
+        zipc  = (a.get("zip", "") or "").strip()
+        ctry  = (a.get("country", "") or "").strip()
+        # Ignora filas completamente vacías (p.ej. una fila nueva sin rellenar
+        # que quedó en la tabla del data_editor).
+        if not any([label, line1, line2, city, state, zipc, ctry]):
+            continue
+        clean.append({
+            "label":   label,
+            "line1":   line1,
+            "line2":   line2,
+            "city":    city,
+            "state":   state,
+            "zip":     zipc,
+            "country": ctry,
+        })
+    company["addresses"] = clean
+    _save_full_db(data, sha, f"Set addresses for {client}")
 
 
 # ── CRUD de Contacts (misma lógica que antes, ahora sobre data["contacts"]) ────
