@@ -142,11 +142,11 @@ else:
 
     # ─── Pages ────────────────────────────────────────────────────────────────
     if pagina == "📋 QUOTES":
-        from tools.quoting import show
+        from tools.quotes.quotes_tool import show
         show()
     elif pagina == "👥 CLIENTS":
-        from tools.Clients import show
+        from tools.clients.clients_tool import show
         show()
     elif pagina == "🗓️ CALENDAR":
-        from tools.calendar import show
+        from tools.calendars.calendars_tool import show
         show()
