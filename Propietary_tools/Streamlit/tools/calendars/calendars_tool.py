@@ -221,7 +221,7 @@ def _render_next_event(events: list):
                 when_label = f"in {days_until} days"
 
             with st.container(border=True):
-                c1, c2 = st.columns([5, 1.4])
+                c1, c2, c3 = st.columns([4, 1, 1])
                 with c1:
                     st.markdown(f"**{e.get('event_name', '')}**")
                     st.caption(f"📅 {e.get('date', '')}  ·  {when_label}")
@@ -235,6 +235,10 @@ def _render_next_event(events: list):
                     if e.get("notes"):
                         st.caption(e["notes"])
                 with c2:
+                    if st.button("✏️ Edit", key=f"cal_edit_upcoming_event_{e['id']}", use_container_width=True):
+                        _start_edit_event(e)
+                        st.rerun()
+                with c3:
                     if st.button("📆 View day", key=f"cal_goto_event_{e['id']}", use_container_width=True):
                         st.session_state["cal_selected_date"] = e["date"]
                         st.rerun()
@@ -255,7 +259,7 @@ def _render_next_event(events: list):
                 when_label = f"in {days_until} days"
 
             with st.container(border=True):
-                c1, c2 = st.columns([5, 1.4])
+                c1, c2, c3 = st.columns([4, 1, 1])
                 with c1:
                     st.markdown(f"**{e.get('event_name', '')}**")
                     st.caption(
@@ -265,6 +269,10 @@ def _render_next_event(events: list):
                     if e.get("client"):
                         st.caption(f"🏢 {e['client']}")
                 with c2:
+                    if st.button("✏️ Edit", key=f"cal_edit_upcoming_reminder_{rem['id']}", use_container_width=True):
+                        _start_edit_event(e)
+                        st.rerun()
+                with c3:
                     if st.button("📆 View day", key=f"cal_goto_reminder_{rem['id']}", use_container_width=True):
                         st.session_state["cal_selected_date"] = rem["date"]
                         st.rerun()
@@ -285,10 +293,14 @@ def _render_reminder_banner(events: list):
             label = f"{tag} · **{e.get('event_name', '')}** — event on {e.get('date', '')}"
             if e.get("client"):
                 label += f" · {e.get('client')}"
-            col_a, col_b = st.columns([5, 1])
+            col_a, col_b, col_c = st.columns([4, 1, 1])
             with col_a:
                 st.write(label)
             with col_b:
+                if st.button("✏️ Edit", key=f"cal_edit_banner_{rem['id']}"):
+                    _start_edit_event(e)
+                    st.rerun()
+            with col_c:
                 if st.button("Dismiss", key=f"cal_dismiss_{rem['id']}"):
                     try:
                         calendar_repo.mark_reminder_done(e["id"], rem["id"])
