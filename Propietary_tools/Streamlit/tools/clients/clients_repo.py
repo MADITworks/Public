@@ -28,7 +28,7 @@ BASE_PATH = "Propietary_tools"
 #   {
 #     "companies": {
 #         "Empresa A": {
-#             "display_name": "DCS",   <-- NUEVO: cómo mostrarse en Contacts
+#             "display_name": "DCS",   <-- cómo mostrarse en Contacts
 #             "abn": "", "industry": "", "phone": "", "website": "", "notes": "",
 #             "addresses": [
 #                 {"label": "Billing", "line1": "", "line2": "", "city": "",
@@ -131,7 +131,7 @@ def load_clients_db() -> dict:
     return data.get("contacts", {})
 
 
-# ── Lectura de companies (nuevo) ────────────────────────────────────────────────
+# ── Lectura de companies ────────────────────────────────────────────────────────
 def load_companies_db() -> dict:
     """Devuelve {company_name: {"display_name": ..., "abn": ..., "industry": ...,
     "phone": ..., "website": ..., "notes": ..., "addresses": [...]}}."""
@@ -163,8 +163,8 @@ def create_client_company(
     notes:        str = "",
 ):
     """Crea una empresa (sin contactos todavía) si aún no existe. Si ya
-    existe, no la sobreescribe — usa update_company_info() para editar una
-    empresa existente."""
+    existe, no la sobreescribe — usa update_company_info() o
+    save_company_full() para editar una empresa existente."""
     client = (client or "").strip()
     if not client:
         return
@@ -193,7 +193,10 @@ def update_company_info(
     notes:        str = "",
 ):
     """Actualiza los datos generales de una empresa ya existente (no toca
-    direcciones ni contactos)."""
+    direcciones ni contactos). Nota: para el formulario de edición de
+    empresa se usa preferentemente save_company_full(), que hace todo en
+    una sola escritura y evita 409 Conflict; esta función se mantiene para
+    otros usos puntuales."""
     client = (client or "").strip()
     if not client:
         return
@@ -208,11 +211,94 @@ def update_company_info(
     _save_full_db(data, sha, f"Update company info for {client}")
 
 
+def save_company_full(
+    client:        str,
+    original_name: str = "",
+    display_name:  str = "",
+    abn:           str = "",
+    industry:      str = "",
+    phone:         str = "",
+    website:       str = "",
+    notes:         str = "",
+    addresses:     list[dict] | None = None,
+):
+    """
+    Guarda TODOS los datos de una empresa (rename + info general +
+    direcciones) en una única lectura + una única escritura del archivo.
+
+    Esto reemplaza al flujo anterior de encadenar create_client_company +
+    update_company_info + set_company_addresses en el formulario de
+    empresa: hacer 3 llamadas separadas significa 3 ciclos independientes
+    de lectura-sha-escritura, y si una lectura llegaba antes de que GitHub
+    propagara el commit anterior, el 'sha' quedaba obsoleto y la escritura
+    fallaba con 409 Conflict (esto podía pasar en cualquier guardado, no
+    solo cuando display_name == client, aunque coincidir en contenido no
+    influye en el bug — es puramente una carrera entre escrituras).
+
+    Con una sola lectura + una sola escritura, el 409 por esta causa deja
+    de ser posible dentro de un mismo guardado.
+    """
+    client        = (client or "").strip()
+    original_name = (original_name or "").strip()
+    if not client:
+        return
+
+    data, sha = _get_full_db()
+
+    # 1. Rename (si aplica) — misma lógica que rename_client_company pero
+    #    operando sobre el 'data' ya cargado, sin volver a leer el archivo.
+    if original_name and original_name != client:
+        old_company = data["companies"].pop(original_name, _empty_company())
+        if client not in data["companies"]:
+            data["companies"][client] = old_company
+
+        old_contacts = data["contacts"].pop(original_name, [])
+        existing = data["contacts"].get(client, [])
+        existing_names = {c.get("contact", "").strip().lower() for c in existing}
+        for c in old_contacts:
+            if c.get("contact", "").strip().lower() not in existing_names:
+                existing.append(c)
+        data["contacts"][client] = existing
+
+    # 2. Crear si no existe.
+    company = data["companies"].setdefault(client, _empty_company())
+    data["contacts"].setdefault(client, [])
+
+    # 3. Info general.
+    company["display_name"] = display_name.strip()
+    company["abn"]           = abn.strip()
+    company["industry"]      = industry.strip()
+    company["phone"]         = phone.strip()
+    company["website"]       = website.strip()
+    company["notes"]         = notes.strip()
+
+    # 4. Direcciones (limpiando filas completamente vacías).
+    clean = []
+    for a in (addresses or []):
+        label = (a.get("label", "") or "").strip()
+        line1 = (a.get("line1", "") or "").strip()
+        line2 = (a.get("line2", "") or "").strip()
+        city  = (a.get("city", "") or "").strip()
+        state = (a.get("state", "") or "").strip()
+        zipc  = (a.get("zip", "") or "").strip()
+        ctry  = (a.get("country", "") or "").strip()
+        if not any([label, line1, line2, city, state, zipc, ctry]):
+            continue
+        clean.append({
+            "label": label, "line1": line1, "line2": line2, "city": city,
+            "state": state, "zip": zipc, "country": ctry,
+        })
+    company["addresses"] = clean
+
+    _save_full_db(data, sha, f"Save company {client}")
+
+
 def rename_client_company(old_name: str, new_name: str):
     """Renombra una empresa (companies + contacts a la vez). Si ya existe
     una empresa con el nuevo nombre, fusiona tanto sus datos generales
     (se conservan los del destino, no se sobreescriben) como sus contactos
-    (evitando duplicados por nombre de contacto)."""
+    (evitando duplicados por nombre de contacto). Se mantiene disponible
+    para otros flujos; el formulario de empresa usa save_company_full()."""
     old_name = (old_name or "").strip()
     new_name = (new_name or "").strip()
     if not old_name or not new_name or old_name == new_name:
@@ -325,9 +411,9 @@ def delete_company_address(client: str, index: int):
 
 def set_company_addresses(client: str, addresses: list[dict]):
     """Reemplaza la lista COMPLETA de direcciones de una empresa de una sola
-    vez. Usado por el formulario de edición de empresa, que gestiona todas
-    las direcciones como una tabla editable (múltiples edificios, cada uno
-    con su propio label) y las guarda todas juntas al pulsar Save."""
+    vez. Se mantiene disponible para otros flujos; el formulario de empresa
+    usa save_company_full(), que integra esto junto con el resto de campos
+    en una sola escritura."""
     client = (client or "").strip()
     if not client:
         return
@@ -342,8 +428,6 @@ def set_company_addresses(client: str, addresses: list[dict]):
         state = (a.get("state", "") or "").strip()
         zipc  = (a.get("zip", "") or "").strip()
         ctry  = (a.get("country", "") or "").strip()
-        # Ignora filas completamente vacías (p.ej. una fila nueva sin rellenar
-        # que quedó en la tabla del data_editor).
         if not any([label, line1, line2, city, state, zipc, ctry]):
             continue
         clean.append({
