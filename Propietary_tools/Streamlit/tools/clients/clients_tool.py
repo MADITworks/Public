@@ -24,6 +24,20 @@ WIDGET_KEYS = [
     "_cf_last_seen_company", "_cf_last_seen_contact",
 ]
 
+# ── Company form: seeds + widget keys (prefijo co_ para no chocar con cf_) ────
+CO_SEED_KEYS = ["co_seed_name", "co_original_name"]
+
+CO_WIDGET_KEYS = [
+    "co_name_select", "co_name_new",
+    "co_abn", "co_industry", "co_phone", "co_website", "co_notes",
+    "_co_last_seen_name",
+]
+
+ADDR_WIDGET_KEYS = [
+    "addr_label", "addr_line1", "addr_line2",
+    "addr_city", "addr_state", "addr_zip", "addr_country",
+]
+
 
 # ── Flash messages ──────────────────────────────────────────────────────────────
 def _flash(msg: str, kind: str = "success"):
@@ -48,11 +62,22 @@ def _load_db() -> dict:
     return st.session_state["clients_db_page"]
 
 
+def _load_companies() -> dict:
+    if "companies_db_page" not in st.session_state:
+        try:
+            st.session_state["companies_db_page"] = clients_repo.load_companies_db()
+        except Exception as e:
+            st.session_state["companies_db_page"] = {}
+            st.error(f"❌ Error loading companies database: {e}")
+    return st.session_state["companies_db_page"]
+
+
 def _refresh_db():
     st.session_state.pop("clients_db_page", None)
+    st.session_state.pop("companies_db_page", None)
 
 
-# ── Form open/close state ────────────────────────────────────────────────────
+# ── Form open/close state (contacts) ─────────────────────────────────────────
 def _open_form():
     st.session_state["client_form_open"] = True
 
@@ -61,7 +86,16 @@ def _close_form():
     st.session_state["client_form_open"] = False
 
 
-# ── Form state helpers ───────────────────────────────────────────────────────
+# ── Form open/close state (companies) ────────────────────────────────────────
+def _open_co_form():
+    st.session_state["company_form_open"] = True
+
+
+def _close_co_form():
+    st.session_state["company_form_open"] = False
+
+
+# ── Form state helpers (contacts) ────────────────────────────────────────────
 def _reset_form():
     for key in SEED_KEYS + WIDGET_KEYS:
         st.session_state.pop(key, None)
@@ -101,7 +135,38 @@ def _start_new_contact_for(company: str):
     _open_form()
 
 
-# ── Acciones (on_click callbacks de botones) ─────────────────────────────────
+# ── Form state helpers (companies) ───────────────────────────────────────────
+def _reset_co_form():
+    for key in CO_SEED_KEYS + CO_WIDGET_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state["co_seed_name"]     = ""
+    st.session_state["co_original_name"] = ""
+
+
+def _handle_add_company_click():
+    _reset_co_form()
+    _open_co_form()
+
+
+def _handle_cancel_co_form():
+    _reset_co_form()
+    _close_co_form()
+
+
+def _start_edit_company(company: str, info: dict):
+    for key in CO_WIDGET_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state["co_seed_name"]     = company
+    st.session_state["co_original_name"] = company
+    st.session_state["co_abn"]           = info.get("abn", "")
+    st.session_state["co_industry"]      = info.get("industry", "")
+    st.session_state["co_phone"]         = info.get("phone", "")
+    st.session_state["co_website"]       = info.get("website", "")
+    st.session_state["co_notes"]         = info.get("notes", "")
+    _open_co_form()
+
+
+# ── Acciones (on_click callbacks de botones) — CONTACTS ──────────────────────
 def _handle_save():
     company_choice = st.session_state.get("cf_company_select", NEW_COMPANY_LABEL)
     company_val = (
@@ -183,6 +248,41 @@ def _handle_delete_contact_row(company: str, contact_name: str):
         _flash(f"❌ Error deleting: {e}", "error")
 
 
+# ── Acciones — COMPANIES ─────────────────────────────────────────────────────
+def _handle_save_company():
+    name_choice = st.session_state.get("co_name_select", NEW_COMPANY_LABEL)
+    name_val = (
+        st.session_state.get("co_name_new", "").strip()
+        if name_choice == NEW_COMPANY_LABEL else name_choice
+    )
+    if not name_val:
+        _flash("Company name is required.", "error")
+        return
+
+    original_name = st.session_state.get("co_original_name", "").strip()
+
+    try:
+        if original_name and original_name != name_val:
+            clients_repo.rename_client_company(original_name, name_val)
+
+        clients_repo.create_client_company(name_val)
+        clients_repo.update_company_info(
+            client=name_val,
+            abn=st.session_state.get("co_abn", "").strip(),
+            industry=st.session_state.get("co_industry", "").strip(),
+            phone=st.session_state.get("co_phone", "").strip(),
+            website=st.session_state.get("co_website", "").strip(),
+            notes=st.session_state.get("co_notes", "").strip(),
+        )
+
+        _flash(f"✅ Company saved — {name_val}")
+        _refresh_db()
+        _reset_co_form()
+        _close_co_form()
+    except Exception as e:
+        _flash(f"❌ Error saving company: {e}", "error")
+
+
 def _ask_delete_company(company: str):
     st.session_state[f"confirm_delete_company_{company}"] = True
 
@@ -197,6 +297,9 @@ def _handle_delete_company(company: str):
         _flash(f"✅ Deleted company {company}")
         _refresh_db()
         st.session_state.pop(f"confirm_delete_company_{company}", None)
+        if st.session_state.get("co_original_name") == company:
+            _reset_co_form()
+            _close_co_form()
         if st.session_state.get("cf_original_company") == company:
             _reset_form()
             _close_form()
@@ -204,10 +307,73 @@ def _handle_delete_company(company: str):
         _flash(f"❌ Error deleting company: {e}", "error")
 
 
-# ── Form ───────────────────────────────────────────────────────────────────────
+# ── Acciones — ADDRESSES ─────────────────────────────────────────────────────
+def _start_add_address(company: str):
+    for key in ADDR_WIDGET_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state["addr_target_company"] = company
+    st.session_state["addr_edit_index"]      = None
+    st.session_state["address_form_open"]    = True
+
+
+def _start_edit_address(company: str, index: int, addr: dict):
+    st.session_state["addr_label"]   = addr.get("label", "")
+    st.session_state["addr_line1"]   = addr.get("line1", "")
+    st.session_state["addr_line2"]   = addr.get("line2", "")
+    st.session_state["addr_city"]    = addr.get("city", "")
+    st.session_state["addr_state"]   = addr.get("state", "")
+    st.session_state["addr_zip"]     = addr.get("zip", "")
+    st.session_state["addr_country"] = addr.get("country", "")
+    st.session_state["addr_target_company"] = company
+    st.session_state["addr_edit_index"]      = index
+    st.session_state["address_form_open"]    = True
+
+
+def _handle_cancel_address():
+    for key in ADDR_WIDGET_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state.pop("addr_target_company", None)
+    st.session_state.pop("addr_edit_index", None)
+    st.session_state["address_form_open"] = False
+
+
+def _handle_save_address():
+    company = st.session_state.get("addr_target_company", "")
+    index   = st.session_state.get("addr_edit_index")
+    kwargs  = dict(
+        label=st.session_state.get("addr_label", ""),
+        line1=st.session_state.get("addr_line1", ""),
+        line2=st.session_state.get("addr_line2", ""),
+        city=st.session_state.get("addr_city", ""),
+        state=st.session_state.get("addr_state", ""),
+        zip_code=st.session_state.get("addr_zip", ""),
+        country=st.session_state.get("addr_country", ""),
+    )
+    try:
+        if index is None:
+            clients_repo.add_company_address(company, **kwargs)
+        else:
+            clients_repo.update_company_address(company, index, **kwargs)
+        _flash(f"✅ Address saved for {company}")
+        _refresh_db()
+        _handle_cancel_address()
+    except Exception as e:
+        _flash(f"❌ Error saving address: {e}", "error")
+
+
+def _handle_delete_address(company: str, index: int):
+    try:
+        clients_repo.delete_company_address(company, index)
+        _flash(f"✅ Address deleted from {company}")
+        _refresh_db()
+    except Exception as e:
+        _flash(f"❌ Error deleting address: {e}", "error")
+
+
+# ── Contact Form ──────────────────────────────────────────────────────────────
 def _render_form(clients_db: dict):
     is_editing = bool(st.session_state.get("cf_original_contact"))
-    heading = "✏️ EDIT CONTACT" if is_editing else "➕ NEW CLIENT / CONTACT"
+    heading = "✏️ EDIT CONTACT" if is_editing else "➕ NEW CONTACT"
 
     with st.container(border=True):
         st.markdown(
@@ -332,12 +498,102 @@ def _render_form(clients_db: dict):
         st.button("✖ Cancel", use_container_width=True, on_click=_handle_cancel_form)
 
 
-# ── Browse / list ────────────────────────────────────────────────────────────
-def _render_browse(clients_db: dict):
-    st.markdown("### 📚 Client Directory")
+# ── Company Form ──────────────────────────────────────────────────────────────
+def _render_company_form(companies_db: dict):
+    is_editing = bool(st.session_state.get("co_original_name"))
+    heading = "✏️ EDIT COMPANY" if is_editing else "➕ NEW COMPANY"
+
+    with st.container(border=True):
+        st.markdown(
+            f"<div style='font-size:0.95rem;font-weight:700;color:#1a2a3a;"
+            f"letter-spacing:.02em;margin-bottom:10px;'>{heading}</div>",
+            unsafe_allow_html=True,
+        )
+
+        if is_editing:
+            st.text_input("🏢 Company name", key="co_name_new_edit",
+                          value=st.session_state.get("co_seed_name", ""))
+            # Al editar, el nombre "efectivo" es siempre el del text_input.
+            st.session_state["co_name_select"] = NEW_COMPANY_LABEL
+            st.session_state["co_name_new"] = st.session_state.get("co_name_new_edit", "")
+            name_value = st.session_state["co_name_new"].strip()
+        else:
+            st.text_input("🏢 Company name", key="co_name_new")
+            st.session_state["co_name_select"] = NEW_COMPANY_LABEL
+            name_value = st.session_state.get("co_name_new", "").strip()
+
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            st.text_input("🏷️ ABN", key="co_abn")
+        with cc2:
+            st.text_input("🏭 Industry", key="co_industry")
+
+        cc3, cc4 = st.columns(2)
+        with cc3:
+            st.text_input("📞 Phone", key="co_phone")
+        with cc4:
+            st.text_input("🌐 Website", key="co_website")
+
+        st.text_area("📝 Notes", key="co_notes", height=80)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    can_save = bool(name_value)
+    if not can_save:
+        st.warning("Fill in **Company name** to be able to save.")
+
+    btn1, btn2, _ = st.columns([1.2, 1.2, 3])
+    with btn1:
+        st.button(
+            "💾 Save", type="primary", disabled=not can_save,
+            use_container_width=True, on_click=_handle_save_company,
+        )
+    with btn2:
+        st.button("✖ Cancel", use_container_width=True, on_click=_handle_cancel_co_form)
+
+
+# ── Address Form (inline, se abre dentro del expander de la empresa) ─────────
+def _render_address_form():
+    is_editing = st.session_state.get("addr_edit_index") is not None
+    heading = "✏️ Edit address" if is_editing else "➕ New address"
+
+    st.markdown(f"**{heading}**")
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        st.text_input("Label (e.g. Billing, Shipping)", key="addr_label")
+    with ac2:
+        st.text_input("Address line 1", key="addr_line1")
+
+    ac3, ac4 = st.columns(2)
+    with ac3:
+        st.text_input("Address line 2", key="addr_line2")
+    with ac4:
+        st.text_input("City", key="addr_city")
+
+    ac5, ac6, ac7 = st.columns(3)
+    with ac5:
+        st.text_input("State", key="addr_state")
+    with ac6:
+        st.text_input("Zip / Postcode", key="addr_zip")
+    with ac7:
+        st.text_input("Country", key="addr_country")
+
+    ab1, ab2, _ = st.columns([1, 1, 3])
+    with ab1:
+        st.button("💾 Save address", type="primary", use_container_width=True,
+                  on_click=_handle_save_address)
+    with ab2:
+        st.button("✖ Cancel", use_container_width=True, on_click=_handle_cancel_address)
+
+
+# ── Browse / list — CONTACTS ─────────────────────────────────────────────────
+def _render_browse_contacts(clients_db: dict):
+    st.markdown("### 📚 Contact Directory")
 
     if not clients_db:
-        st.info("No clients saved yet — click **➕ Add client** above to add your first one.")
+        st.info("No contacts saved yet — click **➕ Add contact** above to add your first one.")
         return
 
     col_f, _ = st.columns([1, 3])
@@ -388,13 +644,93 @@ def _render_browse(clients_db: dict):
 
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-            add_col, del_col, _ = st.columns([1.4, 1.6, 3])
-            with add_col:
+            st.button(
+                "➕ Add contact", key=f"addcontact_{company}",
+                on_click=_start_new_contact_for, args=(company,),
+            )
+
+
+# ── Browse / list — COMPANIES ────────────────────────────────────────────────
+def _render_browse_companies(companies_db: dict):
+    st.markdown("### 🏢 Company Directory")
+
+    if not companies_db:
+        st.info("No companies saved yet — click **➕ Add company** above to add your first one.")
+        return
+
+    col_f, _ = st.columns([1, 3])
+    with col_f:
+        search = st.text_input("🔎 Search company", key="company_search", placeholder="Type to filter...")
+
+    names = sorted(companies_db.keys(), key=str.lower)
+    if search:
+        names = [n for n in names if search.lower() in n.lower()]
+
+    if not names:
+        st.caption("No companies match your search.")
+        return
+
+    for company in names:
+        info      = companies_db.get(company, {})
+        addresses = info.get("addresses", [])
+
+        with st.expander(f"🏢 {company}  ·  {len(addresses)} address(es)", expanded=False):
+            ic1, ic2 = st.columns(2)
+            with ic1:
+                st.write(f"**ABN:** {info.get('abn') or '—'}")
+                st.write(f"**Industry:** {info.get('industry') or '—'}")
+            with ic2:
+                st.write(f"**Phone:** {info.get('phone') or '—'}")
+                st.write(f"**Website:** {info.get('website') or '—'}")
+            st.write(f"**Notes:** {info.get('notes') or '—'}")
+
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            st.markdown("**📍 Addresses**")
+
+            if addresses:
+                for idx, addr in enumerate(addresses):
+                    line = ", ".join(
+                        v for v in [addr.get("line1"), addr.get("line2"), addr.get("city"),
+                                    addr.get("state"), addr.get("zip"), addr.get("country")]
+                        if v
+                    )
+                    ac1, ac2, ac3 = st.columns([1.4, 4, 1.2])
+                    ac1.write(f"**{addr.get('label') or '—'}**")
+                    ac2.write(line or "��")
+                    with ac3:
+                        eb, db = st.columns(2)
+                        with eb:
+                            st.button("✏️", key=f"editaddr_{company}_{idx}",
+                                      use_container_width=True,
+                                      on_click=_start_edit_address, args=(company, idx, addr))
+                        with db:
+                            st.button("🗑️", key=f"deladdr_{company}_{idx}",
+                                      use_container_width=True,
+                                      on_click=_handle_delete_address, args=(company, idx))
+            else:
+                st.caption("No addresses yet.")
+
+            if (
+                st.session_state.get("address_form_open")
+                and st.session_state.get("addr_target_company") == company
+            ):
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                _render_address_form()
+            else:
                 st.button(
-                    "➕ Add contact", key=f"addcontact_{company}", use_container_width=True,
-                    on_click=_start_new_contact_for, args=(company,),
+                    "➕ Add address", key=f"addaddr_{company}",
+                    on_click=_start_add_address, args=(company,),
                 )
-            with del_col:
+
+            st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+            ec1, dc1, _ = st.columns([1.4, 1.6, 3])
+            with ec1:
+                st.button(
+                    "✏️ Edit company", key=f"editcompany_{company}", use_container_width=True,
+                    on_click=_start_edit_company, args=(company, info),
+                )
+            with dc1:
                 confirm_key = f"confirm_delete_company_{company}"
                 if st.session_state.get(confirm_key):
                     cdc1, cdc2 = st.columns(2)
@@ -419,26 +755,54 @@ def _render_browse(clients_db: dict):
 def show():
     if "cf_seed_company" not in st.session_state:
         _reset_form()
+    if "co_seed_name" not in st.session_state:
+        _reset_co_form()
     if "client_form_open" not in st.session_state:
         st.session_state["client_form_open"] = False
+    if "company_form_open" not in st.session_state:
+        st.session_state["company_form_open"] = False
+    if "clients_view" not in st.session_state:
+        st.session_state["clients_view"] = "companies"
 
-    title_col, add_col = st.columns([5, 1.4])
-    with title_col:
-        st.title("👥 CLIENTS")
-        st.caption("Manage your client and contact database — used by the Quotes form.")
-    with add_col:
-        st.markdown("<div style='height:22px'></div>", unsafe_allow_html=True)
-        st.button(
-            "➕ Add client", type="primary", use_container_width=True,
-            on_click=_handle_add_client_click,
-        )
+    st.title("👥 CLIENTS")
+    st.caption("Manage your companies and contacts — used by the Quotes form.")
 
     _show_flash()
 
-    clients_db = _load_db()
+    view_col, add_col = st.columns([5, 1.4])
+    with view_col:
+        view = st.radio(
+            "View",
+            ["🏢 Companies", "👤 Contacts"],
+            horizontal=True,
+            label_visibility="collapsed",
+            index=0 if st.session_state["clients_view"] == "companies" else 1,
+        )
+        st.session_state["clients_view"] = "companies" if view == "🏢 Companies" else "contacts"
 
-    if st.session_state["client_form_open"]:
-        _render_form(clients_db)
-        st.divider()
+    with add_col:
+        if st.session_state["clients_view"] == "companies":
+            st.button(
+                "➕ Add company", type="primary", use_container_width=True,
+                on_click=_handle_add_company_click,
+            )
+        else:
+            st.button(
+                "➕ Add contact", type="primary", use_container_width=True,
+                on_click=_handle_add_client_click,
+            )
 
-    _render_browse(clients_db)
+    st.divider()
+
+    if st.session_state["clients_view"] == "companies":
+        companies_db = _load_companies()
+        if st.session_state["company_form_open"]:
+            _render_company_form(companies_db)
+            st.divider()
+        _render_browse_companies(companies_db)
+    else:
+        clients_db = _load_db()
+        if st.session_state["client_form_open"]:
+            _render_form(clients_db)
+            st.divider()
+        _render_browse_contacts(clients_db)
