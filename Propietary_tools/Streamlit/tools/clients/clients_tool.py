@@ -846,7 +846,7 @@ def _render_browse_companies(companies_db: dict):
         display_name = (info.get("display_name") or "").strip()
         label        = f"🏢 {display_name} ({company})" if display_name else f"🏢 {company}"
 
-        with st.expander(f"{label}  ·  {len(addresses)} address(es)", expanded=False):
+        with st.expander(label, expanded=False):
             ic1, ic2 = st.columns(2)
             with ic1:
                 st.write(f"**Display name in Contacts:** {display_name or '— (uses full name)'}")
