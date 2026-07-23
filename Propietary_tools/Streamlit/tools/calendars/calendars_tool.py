@@ -570,7 +570,7 @@ def _render_month(year: int, month: int, day_index: dict, selected_date_str: str
         _render_week(week_cells, year, month, day_index, selected_date_str, today)
 
 
-# ── Navigation across 2-month blocks ─────────────────────────────────────────────
+# ── Navigation across 3-month blocks ─────────────────────────────────────────────
 def _shift_block(delta_months: int):
     y = st.session_state["cal_start_year"]
     m = st.session_state["cal_start_month"] + delta_months
@@ -592,11 +592,11 @@ def _render_nav():
     nav1, nav2, nav3, nav4, nav5, _ = st.columns([1, 1, 1, 1.4, 1.4, 2.6])
     with nav1:
         if st.button("← Previous", use_container_width=True):
-            _shift_block(-2)
+            _shift_block(-3)
             st.rerun()
     with nav2:
         if st.button("Next →", use_container_width=True):
-            _shift_block(2)
+            _shift_block(3)
             st.rerun()
     with nav3:
         if st.button("📍 Today", use_container_width=True):
@@ -727,17 +727,25 @@ def show():
 
     months_to_show = []
     y, m = start_year, start_month
-    for _ in range(2):
+    for _ in range(3):
         months_to_show.append((y, m))
         m += 1
         if m > 12:
             m = 1
             y += 1
 
-    for row_start in range(0, len(months_to_show), 2):
-        row_months = months_to_show[row_start:row_start + 2]
-        if len(row_months) == 2:
-            _, col_left, col_gap, col_right, _ = st.columns([1.8, 1.9, 0.3, 1.9, 1.8])
+    for row_start in range(0, len(months_to_show), 3):
+        row_months = months_to_show[row_start:row_start + 3]
+        if len(row_months) == 3:
+            col_1, col_g1, col_2, col_g2, col_3 = st.columns([2.2, 0.2, 2.2, 0.2, 2.2])
+            with col_1:
+                _render_month(*row_months[0], day_index, st.session_state["cal_selected_date"], today)
+            with col_2:
+                _render_month(*row_months[1], day_index, st.session_state["cal_selected_date"], today)
+            with col_3:
+                _render_month(*row_months[2], day_index, st.session_state["cal_selected_date"], today)
+        elif len(row_months) == 2:
+            col_left, col_gap, col_right = st.columns([2.2, 0.2, 2.2])
             with col_left:
                 _render_month(*row_months[0], day_index, st.session_state["cal_selected_date"], today)
             with col_right:
@@ -747,7 +755,7 @@ def show():
             with center_col:
                 _render_month(*row_months[0], day_index, st.session_state["cal_selected_date"], today)
 
-        if row_start + 2 < len(months_to_show):
+        if row_start + 3 < len(months_to_show):
             st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
             st.divider()
 
