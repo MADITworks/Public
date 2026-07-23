@@ -253,15 +253,6 @@ def parse_techdata(sheets: dict) -> tuple[dict, pd.DataFrame]:
                     break
 
     # ── Line-item blocks ──────────────────────────────────────────────────────
-    # IMPORTANT: a TechData "General" sheet can contain either:
-    #   (a) a single line-item block (one "Line No./Part No./Qty..." header,
-    #       one "Subtotal:" row) — the classic/original format, or
-    #   (b) MULTIPLE line-item blocks, each with its own header row and its
-    #       own "Subtotal:" (e.g. one block for hardware, another block for
-    #       a support/warranty add-on, etc).
-    # We detect every header row and walk each block separately, so both
-    # formats are handled by the same code path (a single block just means
-    # the loop below runs once).
     header_row_indices = []
     for i, row in df_raw.iterrows():
         rs = " ".join(str(v).strip().lower() for v in row)
@@ -295,10 +286,6 @@ def parse_techdata(sheets: dict) -> tuple[dict, pd.DataFrame]:
         unit_cost_col  = col_map.get("unit_cost",  7)
         total_cost_col = col_map.get("total_cost", 8)
 
-        # Each block stops at its own subtotal/total/freight/gst row, or —
-        # defensively — at the start of the next block's header row, in case
-        # a block is missing an explicit "subtotal" line before the next
-        # header.
         next_header_idx = header_row_indices[block_num + 1] if block_num + 1 < len(header_row_indices) else len(df_raw)
 
         for i in range(header_idx + 1, next_header_idx):
@@ -470,11 +457,11 @@ def _mime_for_filename(filename: str) -> str:
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-# FIX: ruta actualizada tras la reorganización de carpetas — client_contact_step.py
-# fue renombrado y movido a tools/clients/clients_repo.py.
-from tools.clients.clients_repo import (
-    NEW_COMPANY_LABEL,
-    NEW_CONTACT_LABEL,
+# Step 1 (Client & Contact) vive en su propio módulo dentro de tools/quotes/,
+# totalmente independiente de tools/clients/. Solo LEE clients_repo — nunca
+# crea clientes/contactos nuevos (por eso ya no se importan
+# NEW_COMPANY_LABEL / NEW_CONTACT_LABEL, que quedaron eliminados).
+from tools.quotes.quotes_clients import (
     CLIENT_FORM_WIDGET_KEYS,
     snapshot_client_info,
     apply_confirmed_info,
@@ -483,16 +470,6 @@ from tools.clients.clients_repo import (
 
 
 # ── Repository / navigation state helpers ───────────────────────────────────────
-# NOTA (fix bug "Xero desaparece"): `loaded_record_id` se usa para DOS cosas
-# distintas:
-#   1) Saber si la quote actual se abrió desde el Historial ("Open").
-#   2) Guardar el id devuelto por quotes_repo.save_quote() al hacer "Save Quote"
-#      de una quote NUEVA, para poder actualizarla si se guarda de nuevo.
-# El problema: al guardar una quote nueva, (2) deja `loaded_record_id` seteado,
-# y en el siguiente rerun (p.ej. al volver de autenticar Xero) el código
-# interpretaba eso como (1) y ocultaba toda la sección de "Save to Repository"
-# / "Send to Xero". Se agrega `opened_from_history`, que SOLO se activa cuando
-# la quote se abre realmente desde el Historial, para desacoplar ambos casos.
 NEW_QUOTE_STATE_KEYS = [
     "items_saved", "quote_file_id", "meta", "distributor", "edit_mode",
     "edit_counter", "items_snapshot", "quote_saved_record", "loaded_record_id",
@@ -519,10 +496,6 @@ def _load_saved_quote(record: dict):
     from tools.quotes import quotes_repo
 
     with st.spinner("Loading saved quote..."):
-        # Se pasa el registro completo (no solo el id) porque el detalle y el
-        # excel ahora pueden vivir en una carpeta por cliente; el registro
-        # trae 'detail_path'/'excel_path' (o cae a la ruta plana antigua si
-        # es una quote guardada antes de esta reorganización).
         detail      = quotes_repo.load_quote_detail(record)
         excel_bytes = quotes_repo.download_quote_excel(detail)
 
@@ -553,16 +526,8 @@ def _load_saved_quote(record: dict):
     st.session_state["original_excel_bytes"] = excel_bytes
     st.session_state["original_excel_name"]  = detail["filename"]
     st.session_state["quote_saved_record"]   = record
-    # Esta quote viene realmente del Historial (botón "Open"): se marca
-    # explícitamente para que "Save to Repository" / "Send to Xero" se
-    # oculten, evitando duplicados. Esto es independiente de que, más abajo
-    # en _show_new_quote(), un "Save Quote" de una quote NUEVA también deje
-    # `loaded_record_id` seteado (ese caso NO debe ocultar Xero).
     st.session_state["opened_from_history"]  = True
 
-    # Un registro cargado desde el repositorio ya tiene cliente/contacto
-    # validados: se marca el Paso 1 como completado y se congela el
-    # snapshot que alimenta "More details", para que herede los datos.
     apply_confirmed_info({
         "client":         detail.get("client", ""),
         "contact":        detail.get("contact", ""),
@@ -591,15 +556,9 @@ def _show_history():
         st.info("No saved quotes yet.")
         return
 
-    # Cache de bytes de Excel ya descargados en esta sesión, para no volver
-    # a pedirlos a GitHub en cada rerender (patrón de 2 pasos requerido por
-    # st.download_button, que necesita los bytes disponibles de antemano).
     if "quote_file_cache" not in st.session_state:
         st.session_state["quote_file_cache"] = {}
 
-    # Las quotes guardadas antes de añadir el campo "status" no lo tienen en
-    # su JSON — se leen como "Sent" por defecto (mismo valor que se asigna a
-    # las quotes nuevas), así que no hace falta migrar nada a mano.
     clients = sorted(set(q.get("client", "—") for q in quotes))
     col_f1, col_f2, _ = st.columns([1, 1, 2])
     with col_f1:
@@ -661,9 +620,6 @@ def _show_history():
                     if new_status != current_status:
                         try:
                             quotes_repo.set_quote_status(rec["id"], new_status)
-                            # Actualiza también la cache local para que el
-                            # badge/orden se refleje sin tener que recargar
-                            # todo el índice desde GitHub.
                             rec["status"] = new_status
                             st.rerun()
                         except Exception as e:
@@ -692,9 +648,6 @@ def _show_history():
                         if st.button("⬇️ File", key=f"prep_{rec['id']}", use_container_width=True):
                             try:
                                 with st.spinner("Fetching file..."):
-                                    # Se pasa el registro completo (rec), no solo el
-                                    # filename, porque el archivo ahora puede vivir
-                                    # dentro de la carpeta del cliente.
                                     file_bytes = quotes_repo.download_quote_excel(rec)
                                 cache[rec["id"]] = file_bytes
                                 st.rerun()
@@ -707,14 +660,8 @@ def _show_new_quote():
     from tools.quotes import quotes_repo
 
     loaded_id = st.session_state.get("loaded_record_id")
-    # Distinción clave para el fix: `loaded_id` puede quedar seteado tanto
-    # por "Open" en el Historial como por un "Save Quote" reciente de una
-    # quote nueva. Solo el primer caso debe ocultar Save/Xero más abajo.
     opened_from_history = st.session_state.get("opened_from_history", False)
 
-    # ── Gate: el Paso 1 (Cliente/Contacto) debe estar validado antes de
-    # continuar. Si estamos viendo una quote ya guardada, ese paso ya
-    # quedó resuelto en _load_saved_quote().
     if not st.session_state.get("client_step_done") and not loaded_id:
         show_client_step()
         return
@@ -790,10 +737,6 @@ def _show_new_quote():
                 return
 
             uploaded.seek(0)
-            # Se guarda el archivo original tal cual (bytes + nombre) para
-            # poder subirlo íntegro a la carpeta del cliente en el repo
-            # privado al momento de "Save Quote", y así poder reabrirlo /
-            # descargarlo más adelante.
             st.session_state["original_excel_bytes"] = uploaded.read()
             st.session_state["original_excel_name"]  = uploaded.name
             st.session_state["quote_file_id"]  = file_id
@@ -830,10 +773,6 @@ def _show_new_quote():
     col3.metric("Currency", meta.get("currency",      "AUD"))
 
     with st.expander("More details"):
-        # Se lee siempre del snapshot congelado en el Paso 1 (o del detalle
-        # de la quote guardada), en vez de los widgets en vivo, para que
-        # estos datos siempre hereden correctamente lo introducido en
-        # Cliente/Contacto.
         info = st.session_state.get("confirmed_client_info", {})
         st.write(f"**Client:** {info.get('client') or '—'}")
         st.write(f"**Contact:** {info.get('contact') or '—'}")
@@ -877,7 +816,7 @@ def _show_new_quote():
         )
 
     else:
-        # ── EDIT mode ────────────────────────────��─────────────────────────────
+        # ── EDIT mode ────────────────────────────────────────────────────────
         with col_btn:
             st.html("<div style='padding-top:28px'>")
             save_clicked = st.button("💾 Save", key="btn_save", type="primary", use_container_width=True)
@@ -980,31 +919,10 @@ def _show_new_quote():
         st.html(render_summary_table(summary))
 
     # ── Save to Repository / Send to Xero ───────────────────────────────────────
-    # Estas dos secciones solo tienen sentido cuando NO se está viendo una
-    # quote abierta desde el Historial (evita re-guardar / re-enviar a Xero
-    # un registro que ya existe y podría generar duplicados).
-    #
-    # FIX (bug "Xero desaparece"): antes esto se gateaba con `not loaded_id`,
-    # pero `loaded_id` también queda seteado justo después de guardar una
-    # quote NUEVA (ver más abajo: st.session_state["loaded_record_id"] =
-    # record["id"]). Eso hacía que, en el siguiente rerun (p.ej. al volver de
-    # autenticar con Xero y presionar "I've connected — verify"), esta
-    # sección entera se ocultara, incluido el botón "Send to Xero", aunque la
-    # quote NUNCA se hubiera abierto desde el Historial. Ahora se usa
-    # `opened_from_history`, que solo es True cuando la quote se abrió
-    # explícitamente con "Open" en el Historial.
     if not opened_from_history:
         st.divider()
         st.markdown("### 💾 Save to Repository")
 
-        # FIX: la UI de arriba (🏢 client · 👤 contact ...) se pinta desde
-        # `confirmed_client_info`, pero antes este bloque validaba solo contra
-        # `st.session_state["quote_client"]` / `["quote_title"]`, que no siempre
-        # quedan pobladas en el flujo de quote NUEVA (show_client_step() guarda
-        # en confirmed_client_info, no necesariamente en esas keys sueltas).
-        # Ahora usamos confirmed_client_info como fuente de verdad, con las keys
-        # de session_state como override si el usuario las tocó manualmente
-        # (p.ej. al editar los campos tras cargar una quote guardada).
         info = st.session_state.get("confirmed_client_info", {})
 
         client_val         = (st.session_state.get("quote_client") or info.get("client") or "").strip()
@@ -1043,9 +961,6 @@ def _show_new_quote():
                     record = None
 
             if record:
-                # Sincroniza las keys sueltas con lo que realmente se guardó,
-                # para que el resto del flujo (Xero, reload, etc.) las tenga
-                # disponibles de forma consistente.
                 st.session_state["quote_client"]         = client_val
                 st.session_state["quote_title"]          = title_val
                 st.session_state["quote_contact"]        = contact_val
@@ -1056,20 +971,8 @@ def _show_new_quote():
 
                 st.session_state["quote_saved_record"] = record
                 st.session_state["loaded_record_id"]   = record["id"]
-                # IMPORTANTE: NO se marca `opened_from_history = True` aquí.
-                # Esta quote se guardó recién en esta sesión (no se abrió
-                # desde el Historial), así que Save to Repository / Send to
-                # Xero deben seguir visibles en los próximos reruns.
-                # Refresca también el snapshot usado por "More details" con lo
-                # que realmente se acaba de guardar.
                 snapshot_client_info()
 
-                # NOTA: ya no se llama a quotes_repo.upsert_client_contact() aquí.
-                # El cliente/contacto se crea siempre antes, en el módulo CLIENTS,
-                # así que no hace falta (ni conviene) volver a escribir
-                # clients.json en cada guardado de quote — esto solo añadía
-                # llamadas innecesarias a la API de GitHub y exponía a errores
-                # transitorios (p.ej. 502) sin ningún beneficio real.
                 st.success(f"✅ Quote saved — Quote #{record.get('quote_number', '—')}")
 
         # ── Xero (only available after saving) ──────────────────────────────────
