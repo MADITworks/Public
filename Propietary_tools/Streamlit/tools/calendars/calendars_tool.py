@@ -3,7 +3,7 @@ from datetime import date, datetime
 
 import streamlit as st
 
-from tools.quotes.quotes_repo import load_clients_db
+from tools.clients.clients_repo import load_clients_db
 from tools.calendars import calendars_repo as calendar_repo
 
 
@@ -49,7 +49,7 @@ def _fmt_date(d: date) -> str:
     return d.strftime("%d/%m/%Y")
 
 
-# ── Flash messages ───────────────────────────────��───────────────────────────────
+# ── Flash messages ─────────────────────────────────────────────────────────────
 def _flash(msg: str, kind: str = "success"):
     st.session_state["_cal_flash"] = (kind, msg)
 
