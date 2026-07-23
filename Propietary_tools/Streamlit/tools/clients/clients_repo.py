@@ -24,10 +24,11 @@ BASE_PATH = "Propietary_tools"
 
 
 # ── Base de datos de clientes ({BASE_PATH}/Clients/clients.json) ───────────────
-# v2 — esquema nuevo:
+# v2 — esquema:
 #   {
 #     "companies": {
 #         "Empresa A": {
+#             "display_name": "DCS",   <-- NUEVO: cómo mostrarse en Contacts
 #             "abn": "", "industry": "", "phone": "", "website": "", "notes": "",
 #             "addresses": [
 #                 {"label": "Billing", "line1": "", "line2": "", "city": "",
@@ -51,6 +52,7 @@ def _clients_path() -> str:
 
 def _empty_company() -> dict:
     return {
+        "display_name": "",
         "abn":       "",
         "industry":  "",
         "phone":     "",
@@ -97,6 +99,9 @@ def _get_full_db() -> tuple[dict, str | None]:
 
     raw.setdefault("companies", {})
     raw.setdefault("contacts", {})
+    # Backfill: empresas creadas antes de añadir "display_name".
+    for company in raw["companies"].values():
+        company.setdefault("display_name", "")
     return raw, sha
 
 
@@ -128,20 +133,34 @@ def load_clients_db() -> dict:
 
 # ── Lectura de companies (nuevo) ────────────────────────────────────────────────
 def load_companies_db() -> dict:
-    """Devuelve {company_name: {"abn": ..., "industry": ..., "phone": ...,
-    "website": ..., "notes": ..., "addresses": [...]}}."""
+    """Devuelve {company_name: {"display_name": ..., "abn": ..., "industry": ...,
+    "phone": ..., "website": ..., "notes": ..., "addresses": [...]}}."""
     data, _ = _get_full_db()
     return data.get("companies", {})
 
 
+def get_company_display_name(client: str) -> str:
+    """Devuelve el 'display_name' de una empresa (ej. 'DCS' para 'Department
+    of Customer Service'). Si está vacío o la empresa no existe, devuelve el
+    nombre completo tal cual — así siempre hay algo razonable que mostrar en
+    Contacts sin tener que comprobar antes si está configurado."""
+    client = (client or "").strip()
+    if not client:
+        return client
+    data, _ = _get_full_db()
+    info = data["companies"].get(client, {})
+    return (info.get("display_name") or "").strip() or client
+
+
 # ── CRUD de Companies ───────────────────────────────────────────────────────────
 def create_client_company(
-    client:    str,
-    abn:       str = "",
-    industry:  str = "",
-    phone:     str = "",
-    website:   str = "",
-    notes:     str = "",
+    client:       str,
+    display_name: str = "",
+    abn:          str = "",
+    industry:     str = "",
+    phone:        str = "",
+    website:      str = "",
+    notes:        str = "",
 ):
     """Crea una empresa (sin contactos todavía) si aún no existe. Si ya
     existe, no la sobreescribe — usa update_company_info() para editar una
@@ -152,6 +171,7 @@ def create_client_company(
     data, sha = _get_full_db()
     if client not in data["companies"]:
         data["companies"][client] = {
+            "display_name": display_name.strip(),
             "abn":       abn.strip(),
             "industry":  industry.strip(),
             "phone":     phone.strip(),
@@ -164,12 +184,13 @@ def create_client_company(
 
 
 def update_company_info(
-    client:    str,
-    abn:       str = "",
-    industry:  str = "",
-    phone:     str = "",
-    website:   str = "",
-    notes:     str = "",
+    client:       str,
+    display_name: str = "",
+    abn:          str = "",
+    industry:     str = "",
+    phone:        str = "",
+    website:      str = "",
+    notes:        str = "",
 ):
     """Actualiza los datos generales de una empresa ya existente (no toca
     direcciones ni contactos)."""
@@ -178,11 +199,12 @@ def update_company_info(
         return
     data, sha = _get_full_db()
     company = data["companies"].setdefault(client, _empty_company())
-    company["abn"]      = abn.strip()
-    company["industry"] = industry.strip()
-    company["phone"]    = phone.strip()
-    company["website"]  = website.strip()
-    company["notes"]    = notes.strip()
+    company["display_name"] = display_name.strip()
+    company["abn"]           = abn.strip()
+    company["industry"]      = industry.strip()
+    company["phone"]         = phone.strip()
+    company["website"]       = website.strip()
+    company["notes"]         = notes.strip()
     _save_full_db(data, sha, f"Update company info for {client}")
 
 
