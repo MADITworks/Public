@@ -1,5 +1,5 @@
 import streamlit as st
-from tools import quotes_repo
+from tools.quotes import quotes_repo
 
 
 NEW_COMPANY_LABEL = "➕ New company..."
@@ -40,7 +40,7 @@ def _show_flash():
         getattr(st, kind)(msg)
 
 
-# ── Data helpers ─────────────────────────────────────────────────────────────
+# ── Data helpers ────────────���────────────────────────────────────────────────
 def _load_db() -> dict:
     if "clients_db_page" not in st.session_state:
         try:
