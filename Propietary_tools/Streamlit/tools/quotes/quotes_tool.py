@@ -470,28 +470,16 @@ def _mime_for_filename(filename: str) -> str:
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-try:
-    # Caso normal: client_contact_step.py está en la MISMA carpeta que este
-    # archivo (quotes.py) — p.ej. dentro de tools/, junto a Clients.py.
-    from client_contact_step import (
-        NEW_COMPANY_LABEL,
-        NEW_CONTACT_LABEL,
-        CLIENT_FORM_WIDGET_KEYS,
-        snapshot_client_info,
-        apply_confirmed_info,
-        show_client_step,
-    )
-except ModuleNotFoundError:
-    # Fallback si quotes.py vive fuera del paquete tools/ pero
-    # client_contact_step.py sí se colocó dentro de tools/.
-    from tools.client_contact_step import (
-        NEW_COMPANY_LABEL,
-        NEW_CONTACT_LABEL,
-        CLIENT_FORM_WIDGET_KEYS,
-        snapshot_client_info,
-        apply_confirmed_info,
-        show_client_step,
-    )
+# FIX: ruta actualizada tras la reorganización de carpetas — client_contact_step.py
+# fue renombrado y movido a tools/clients/clients_repo.py.
+from tools.clients.clients_repo import (
+    NEW_COMPANY_LABEL,
+    NEW_CONTACT_LABEL,
+    CLIENT_FORM_WIDGET_KEYS,
+    snapshot_client_info,
+    apply_confirmed_info,
+    show_client_step,
+)
 
 
 # ── Repository / navigation state helpers ───────────────────────────────────────
@@ -528,7 +516,7 @@ def _reset_new_quote_flow():
 
 
 def _load_saved_quote(record: dict):
-    from tools import quotes_repo
+    from tools.quotes import quotes_repo
 
     with st.spinner("Loading saved quote..."):
         # Se pasa el registro completo (no solo el id) porque el detalle y el
@@ -588,7 +576,7 @@ def _load_saved_quote(record: dict):
 
 # ── Quote History ───────────────────────────────────────────────────────────────
 def _show_history():
-    from tools import quotes_repo
+    from tools.quotes import quotes_repo
 
     st.markdown("### 📚 Quote History")
 
@@ -716,7 +704,7 @@ def _show_history():
 
 # ── New Quote / View Saved Quote ────────────────────────────────────────────────
 def _show_new_quote():
-    from tools import quotes_repo
+    from tools.quotes import quotes_repo
 
     loaded_id = st.session_state.get("loaded_record_id")
     # Distinción clave para el fix: `loaded_id` puede quedar seteado tanto
@@ -889,7 +877,7 @@ def _show_new_quote():
         )
 
     else:
-        # ── EDIT mode ──────────────────────────────────────────────────────────
+        # ── EDIT mode ────────────────────────────��─────────────────────────────
         with col_btn:
             st.html("<div style='padding-top:28px'>")
             save_clicked = st.button("💾 Save", key="btn_save", type="primary", use_container_width=True)
