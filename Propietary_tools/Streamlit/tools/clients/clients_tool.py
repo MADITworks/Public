@@ -24,7 +24,7 @@ WIDGET_KEYS = [
     "_cf_last_seen_company", "_cf_last_seen_contact",
 ]
 
-# ── Company form: seeds + widget keys (prefijo co_ para no chocar con cf_) ────
+# ── Company form: seeds + widget keys (prefijo co_ para no chocar con cf_) ��───
 CO_SEED_KEYS = ["co_seed_name", "co_original_name"]
 
 CO_WIDGET_KEYS = [
@@ -844,7 +844,7 @@ def _render_browse_companies(companies_db: dict):
         info         = companies_db.get(company, {})
         addresses    = info.get("addresses", [])
         display_name = (info.get("display_name") or "").strip()
-        label        = f"🏢 {display_name} ({company})" if display_name else f"🏢 {company}"
+        label        = f"🏢 {company}"
 
         with st.expander(label, expanded=False):
             ic1, ic2 = st.columns(2)
