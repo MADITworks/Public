@@ -576,83 +576,83 @@ def _show_history():
         st.caption("No quotes match this filter.")
         return
 
-    grouped: dict[str, list] = {}
-    for q in filtered:
-        grouped.setdefault(q.get("client", "—"), []).append(q)
+    def _date_key(r):
+        try:
+            return datetime.strptime(r.get("date", ""), "%d/%m/%Y")
+        except (ValueError, TypeError):
+            return datetime.min
 
-    for client, recs in sorted(grouped.items(), key=lambda kv: kv[0].lower()):
+    filtered_sorted = sorted(
+        filtered,
+        key=lambda r: (r.get("client", "—").lower(), -_date_key(r).timestamp()),
+    )
 
-        def _date_key(r):
-            try:
-                return datetime.strptime(r.get("date", ""), "%d/%m/%Y")
-            except (ValueError, TypeError):
-                return datetime.min
+    st.caption(f"Showing {len(filtered_sorted)} quote(s)")
 
-        recs_sorted = sorted(recs, key=_date_key, reverse=True)
+    hc0, hc1, hc2, hc3, hc4, hc5, hc6, hc7 = st.columns([1.6, 1.8, 1.0, 1.4, 1.1, 1.2, 0.9, 1.1])
+    hc0.markdown("**Company**")
+    hc1.markdown("**Title**")
+    hc2.markdown("**Date**")
+    hc3.markdown("**Quote #**")
+    hc4.markdown("**Total (Sell)**")
+    hc5.markdown("**Status**")
+    hc6.markdown("")
+    hc7.markdown("")
 
-        with st.expander(f"🏢 {client}  ·  {len(recs_sorted)} quote(s)", expanded=(client_filter != "All" or status_filter != "All")):
-            hc1, hc2, hc3, hc4, hc5, hc6, hc7 = st.columns([2.0, 1.2, 1.6, 1.2, 1.4, 0.9, 1.2])
-            hc1.markdown("**Title**")
-            hc2.markdown("**Date**")
-            hc3.markdown("**Quote #**")
-            hc4.markdown("**Total (Sell)**")
-            hc5.markdown("**Status**")
-            hc6.markdown("")
-            hc7.markdown("")
+    for rec in filtered_sorted:
+        c0, c1, c2, c3, c4, c5, c6, c7 = st.columns([1.6, 1.8, 1.0, 1.4, 1.1, 1.2, 0.9, 1.1])
+        c0.write(f"🏢 {rec.get('client', '—')}")
+        c1.write(rec.get("title", "—") or "—")
+        c2.write(rec.get("date", "—"))
+        c3.write(f"#{rec.get('quote_number', '—')}  ({rec.get('distributor', '—')})")
+        c4.write(fmt(rec.get("sell_total", 0)))
 
-            for rec in recs_sorted:
-                c1, c2, c3, c4, c5, c6, c7 = st.columns([2.0, 1.2, 1.6, 1.2, 1.4, 0.9, 1.2])
-                c1.write(rec.get("title", "—") or "—")
-                c2.write(rec.get("date", "—"))
-                c3.write(f"#{rec.get('quote_number', '—')}  ({rec.get('distributor', '—')})")
-                c4.write(fmt(rec.get("sell_total", 0)))
+        current_status = rec.get("status", quotes_repo.DEFAULT_STATUS)
+        with c5:
+            new_status = st.selectbox(
+                "Status",
+                quotes_repo.STATUS_CHOICES,
+                index=quotes_repo.STATUS_CHOICES.index(current_status)
+                      if current_status in quotes_repo.STATUS_CHOICES else 0,
+                key=f"status_{rec['id']}",
+                label_visibility="collapsed",
+            )
+            if new_status != current_status:
+                try:
+                    quotes_repo.set_quote_status(rec["id"], new_status)
+                    rec["status"] = new_status
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error updating status: {e}")
 
-                current_status = rec.get("status", quotes_repo.DEFAULT_STATUS)
-                with c5:
-                    new_status = st.selectbox(
-                        "Status",
-                        quotes_repo.STATUS_CHOICES,
-                        index=quotes_repo.STATUS_CHOICES.index(current_status)
-                              if current_status in quotes_repo.STATUS_CHOICES else 0,
-                        key=f"status_{rec['id']}",
-                        label_visibility="collapsed",
-                    )
-                    if new_status != current_status:
-                        try:
-                            quotes_repo.set_quote_status(rec["id"], new_status)
-                            rec["status"] = new_status
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error updating status: {e}")
-
-                with c6:
-                    if st.button("Open", key=f"open_{rec['id']}", use_container_width=True):
-                        _load_saved_quote(rec)
-                        st.session_state["quote_view"] = "new"
+        with c6:
+            if st.button("Open", key=f"open_{rec['id']}", use_container_width=True):
+                _load_saved_quote(rec)
+                st.session_state["quote_view"] = "new"
+                st.rerun()
+        with c7:
+            cache    = st.session_state["quote_file_cache"]
+            filename = rec.get("filename", "")
+            if not filename:
+                st.caption("—")
+            elif rec["id"] in cache:
+                st.download_button(
+                    "⬇️ Save",
+                    data=cache[rec["id"]],
+                    file_name=filename,
+                    mime=_mime_for_filename(filename),
+                    key=f"dl_{rec['id']}",
+                    use_container_width=True,
+                )
+            else:
+                if st.button("⬇️ File", key=f"prep_{rec['id']}", use_container_width=True):
+                    try:
+                        with st.spinner("Fetching file..."):
+                            file_bytes = quotes_repo.download_quote_excel(rec)
+                        cache[rec["id"]] = file_bytes
                         st.rerun()
-                with c7:
-                    cache    = st.session_state["quote_file_cache"]
-                    filename = rec.get("filename", "")
-                    if not filename:
-                        st.caption("—")
-                    elif rec["id"] in cache:
-                        st.download_button(
-                            "⬇️ Save",
-                            data=cache[rec["id"]],
-                            file_name=filename,
-                            mime=_mime_for_filename(filename),
-                            key=f"dl_{rec['id']}",
-                            use_container_width=True,
-                        )
-                    else:
-                        if st.button("⬇️ File", key=f"prep_{rec['id']}", use_container_width=True):
-                            try:
-                                with st.spinner("Fetching file..."):
-                                    file_bytes = quotes_repo.download_quote_excel(rec)
-                                cache[rec["id"]] = file_bytes
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"❌ Could not download: {e}")
+                    except Exception as e:
+                        st.error(f"❌ Could not download: {e}")
 
 
 # ── New Quote / View Saved Quote ────────────────────────────────────────────────
