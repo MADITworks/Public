@@ -649,8 +649,6 @@ def _render_browse_contacts(clients_db: dict):
             placeholder="Type a letter or word (name, title, mobile, email)...",
         )
 
-    row_widths = [1.6, 1.7, 1.3, 2.2, 0.55, 0.55]
-
     def _matches_search(c: dict) -> bool:
         if not search:
             return True
@@ -661,40 +659,11 @@ def _render_browse_contacts(clients_db: dict):
         ]).lower()
         return needle in haystack
 
-    # ── Vista plana: una empresa específica seleccionada ──────────────────
+    # ── Empresa específica seleccionada: tabla plana de sus contactos ─────
     if company_filter != "All companies":
-        contacts = clients_db.get(company_filter, [])
-        contacts = [c for c in contacts if _matches_search(c)]
-
+        contacts = [c for c in clients_db.get(company_filter, []) if _matches_search(c)]
         st.markdown(f"**🏢 {company_filter}**  ·  {len(contacts)} contact(s)")
-
-        if contacts:
-            hc1, hc2, hc3, hc4, hc5, hc6 = st.columns(row_widths)
-            hc1.markdown("**Contact**")
-            hc2.markdown("**Title**")
-            hc3.markdown("**Mobile**")
-            hc4.markdown("**Email**")
-            hc5.markdown("")
-            hc6.markdown("")
-
-            for i, c in enumerate(contacts):
-                c1, c2, c3, c4, c5, c6 = st.columns(row_widths)
-                c1.write(c.get("contact", "") or "—")
-                c2.write(c.get("title", "") or "—")
-                c3.write(c.get("mobile", "") or "—")
-                c4.write(c.get("email", "") or "—")
-                with c5:
-                    st.button(
-                        "✏️", key=f"edit_{company_filter}_{i}", use_container_width=True,
-                        on_click=_start_edit, args=(company_filter, c),
-                    )
-                with c6:
-                    st.button(
-                        "🗑️", key=f"delcontact_{company_filter}_{i}", use_container_width=True,
-                        on_click=_handle_delete_contact_row, args=(company_filter, c.get("contact", "")),
-                    )
-        else:
-            st.caption("No contacts match your search for this company.")
+        _render_contacts_table(contacts, show_company_col=False, company_for_actions=company_filter)
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         st.button(
@@ -703,55 +672,77 @@ def _render_browse_contacts(clients_db: dict):
         )
         return
 
-    # ── Vista agrupada: "All companies" ────────────────────────────────────
-    companies = all_companies
-    if search:
-        companies = [
-            c for c in companies
-            if any(_matches_search(contact) for contact in clients_db.get(c, []))
-        ]
+    # ── "All companies": tabla plana única con TODOS los contactos ────────
+    flat_rows = []
+    for company in all_companies:
+        for c in clients_db.get(company, []):
+            if _matches_search(c):
+                flat_rows.append((company, c))
 
-    if not companies:
+    st.markdown(f"**All companies**  ·  {len(flat_rows)} contact(s)")
+
+    if not flat_rows:
         st.caption("No contacts match your search.")
         return
 
-    for company in companies:
-        contacts = [c for c in clients_db.get(company, []) if _matches_search(c)]
+    row_widths = [1.6, 1.6, 1.7, 1.3, 2.2, 0.55, 0.55]
+    hc1, hc2, hc3, hc4, hc5, hc6, hc7 = st.columns(row_widths)
+    hc1.markdown("**Company**")
+    hc2.markdown("**Contact**")
+    hc3.markdown("**Title**")
+    hc4.markdown("**Mobile**")
+    hc5.markdown("**Email**")
+    hc6.markdown("")
+    hc7.markdown("")
 
-        with st.expander(f"🏢 {company}  ·  {len(contacts)} contact(s)", expanded=False):
-
-            if contacts:
-                hc1, hc2, hc3, hc4, hc5, hc6 = st.columns(row_widths)
-                hc1.markdown("**Contact**")
-                hc2.markdown("**Title**")
-                hc3.markdown("**Mobile**")
-                hc4.markdown("**Email**")
-                hc5.markdown("")
-                hc6.markdown("")
-
-                for i, c in enumerate(contacts):
-                    c1, c2, c3, c4, c5, c6 = st.columns(row_widths)
-                    c1.write(c.get("contact", "") or "—")
-                    c2.write(c.get("title", "") or "—")
-                    c3.write(c.get("mobile", "") or "—")
-                    c4.write(c.get("email", "") or "—")
-                    with c5:
-                        st.button(
-                            "✏️", key=f"edit_{company}_{i}", use_container_width=True,
-                            on_click=_start_edit, args=(company, c),
-                        )
-                    with c6:
-                        st.button(
-                            "🗑️", key=f"delcontact_{company}_{i}", use_container_width=True,
-                            on_click=_handle_delete_contact_row, args=(company, c.get("contact", "")),
-                        )
-            else:
-                st.caption("No contacts yet for this company.")
-
-            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    for i, (company, c) in enumerate(flat_rows):
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(row_widths)
+        c1.write(company)
+        c2.write(c.get("contact", "") or "—")
+        c3.write(c.get("title", "") or "—")
+        c4.write(c.get("mobile", "") or "—")
+        c5.write(c.get("email", "") or "—")
+        with c6:
             st.button(
-                "➕ Add contact", key=f"addcontact_{company}",
-                on_click=_start_new_contact_for, args=(company,),
+                "✏️", key=f"editflat_{company}_{i}", use_container_width=True,
+                on_click=_start_edit, args=(company, c),
+            )
+        with c7:
+            st.button(
+                "🗑️", key=f"delflat_{company}_{i}", use_container_width=True,
+                on_click=_handle_delete_contact_row, args=(company, c.get("contact", "")),
+            )
+
+
+def _render_contacts_table(contacts: list[dict], show_company_col: bool, company_for_actions: str):
+    """Tabla plana de contactos (sin agrupar), usada cuando se filtra por
+    una empresa específica."""
+    if not contacts:
+        st.caption("No contacts match your search for this company.")
+        return
+
+    row_widths = [1.7, 1.3, 2.2, 0.55, 0.55]
+    hc1, hc2, hc3, hc4, hc5 = st.columns(row_widths)
+    hc1.markdown("**Contact**")
+    hc2.markdown("**Title**")
+    hc3.markdown("**Email**")
+    hc4.markdown("")
+    hc5.markdown("")
+
+    for i, c in enumerate(contacts):
+        c1, c2, c3, c4, c5 = st.columns(row_widths)
+        c1.write(c.get("contact", "") or "—")
+        c2.write(c.get("title", "") or "—")
+        c3.write(c.get("email", "") or "—")
+        with c4:
+            st.button(
+                "✏️", key=f"edit_{company_for_actions}_{i}", use_container_width=True,
+                on_click=_start_edit, args=(company_for_actions, c),
+            )
+        with c5:
+            st.button(
+                "🗑️", key=f"delcontact_{company_for_actions}_{i}", use_container_width=True,
+                on_click=_handle_delete_contact_row, args=(company_for_actions, c.get("contact", "")),
             )
 
 
