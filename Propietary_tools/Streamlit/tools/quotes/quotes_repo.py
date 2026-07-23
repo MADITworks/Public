@@ -15,24 +15,18 @@ def _headers():
     }
 
 def _repo_base():
-    # El repo sigue siendo el que ya tenías configurado en secrets
-    # (owner/private_repo) — normalmente "Private". No se toca.
     owner = st.secrets["github"]["owner"]
     repo  = st.secrets["github"]["private_repo"]
     return f"https://api.github.com/repos/{owner}/{repo}"
 
 
 # ── Carpeta base dentro del repo ────────────────────────────────────────────────
-# Todo lo relativo a esta app (Quotes/ y Clients/) cuelga de esta carpeta,
-# en vez de la raíz del repo.
+# Este módulo es AUTÓNOMO: solo lee/escribe {BASE_PATH}/Quotes/*.
+# NO conoce nada de {BASE_PATH}/Clients/ ni {BASE_PATH}/Calendar/.
 BASE_PATH = "Propietary_tools"
 
 
 # ── Estados posibles de una quote ────────────────────────────────────────────────
-# "Sent" es el valor por defecto: se asigna automáticamente a las quotes
-# nuevas y también es lo que se devuelve para cualquier quote guardada ANTES
-# de este cambio (no tienen la clave "status" en su JSON, así que se leen
-# como "Sent" sin necesidad de migrar nada a mano).
 STATUS_SENT     = "Sent"
 STATUS_ACCEPTED = "Accepted"
 STATUS_REJECTED = "Rejected"
@@ -171,12 +165,14 @@ def save_quote(
       existía (edición de una quote guardada), o se pone a "Sent" por
       defecto si es una quote nueva. Para cambiar el estado explícitamente
       usa set_quote_status(), no este método.
+
+    NOTA: este módulo no valida ni crea clientes/contactos — solo recibe
+    'client', 'contact', etc. como texto ya validado por quien lo llame
+    (apoyado en tools.clients.clients_repo).
     """
     is_update = record_id is not None
     rid = record_id or datetime.now().strftime("%Y%m%d%H%M%S")
 
-    # Prefijo de fecha en formato AAAAMMDD (orden cronológico correcto al
-    # listar los archivos dentro de la carpeta del cliente en GitHub)
     try:
         date_prefix = datetime.strptime(date, "%d/%m/%Y").strftime("%Y%m%d")
     except ValueError:
@@ -196,14 +192,12 @@ def save_quote(
     cost_total = round(float(items["Total Cost"].sum()), 2)
     sell_total = round(float(cost_total / (1 - margin_pct / 100)), 2)
 
-    # Índice (resumen)
     index, sha = _get_index()
     old_record = None
     if is_update:
         old_record = next((r for r in index if r.get("id") == rid), None)
         index = [r for r in index if r.get("id") != rid]
 
-    # Preserva el estado existente al editar; por defecto "Sent" si es nueva.
     status = (old_record.get("status", DEFAULT_STATUS) if old_record else DEFAULT_STATUS)
 
     record = {
@@ -223,15 +217,14 @@ def save_quote(
         "cost_total":     cost_total,
         "sell_total":     sell_total,
         "status":         status,
-        "filename":       filename,     # nombre de archivo (display)
-        "excel_path":     excel_path,   # ruta completa dentro del repo
-        "detail_path":    detail_path,  # ruta completa del detalle
+        "filename":       filename,
+        "excel_path":     excel_path,
+        "detail_path":    detail_path,
     }
 
     index.append(record)
     _save_index(index, sha, f"{'Update' if is_update else 'Add'} quote {quote_num} for {client}")
 
-    # Detalle completo (para poder reabrirla exactamente como se guardó)
     detail = {
         **record,
         "meta":  meta,
@@ -239,8 +232,6 @@ def save_quote(
     }
     _save_detail(detail_path, detail, f"{'Update' if is_update else 'Add'} quote detail {rid}")
 
-    # Si el cliente cambió en una actualización, la oferta ahora vive en una
-    # carpeta distinta — limpiamos los archivos viejos para evitar duplicados.
     if old_record:
         old_excel  = old_record.get("excel_path")  or (f"{BASE_PATH}/Quotes/{old_record['filename']}" if old_record.get("filename") else None)
         old_detail = old_record.get("detail_path") or f"{BASE_PATH}/Quotes/data/{rid}.json"
@@ -294,195 +285,10 @@ def download_quote_excel(record: dict) -> bytes:
     return base64.b64decode(r.json()["content"])
 
 
-# ── Lista de clientes únicos (derivada del histórico de ofertas) ───────────────
+# ── Lista de clientes únicos (derivada del histórico de ofertas propias) ───────
 def get_clients() -> list[str]:
+    """Clientes que YA tienen al menos una quote guardada. No tiene relación
+    con la base de datos de clientes de tools/clients — es solo un derivado
+    interno del índice de Quotes, útil para filtros del historial."""
     index = load_quotes()
     return sorted(set(q["client"] for q in index if q.get("client")))
-
-
-# ── Base de datos de clientes / contactos ({BASE_PATH}/Clients/clients.json) ──
-def _clients_path() -> str:
-    return f"{BASE_PATH}/Clients/clients.json"
-
-
-def _get_clients_db() -> tuple[dict, str | None]:
-    """Lee {BASE_PATH}/Clients/clients.json. Devuelve (data, sha)."""
-    url = f"{_repo_base()}/contents/{_clients_path()}"
-    r   = requests.get(url, headers=_headers())
-    if r.status_code == 404:
-        return {}, None
-    r.raise_for_status()
-    content = base64.b64decode(r.json()["content"]).decode()
-    sha     = r.json()["sha"]
-    return json.loads(content), sha
-
-
-def _save_clients_db(data: dict, sha: str | None, message: str):
-    url     = f"{_repo_base()}/contents/{_clients_path()}"
-    content = base64.b64encode(
-        json.dumps(data, indent=2, ensure_ascii=False).encode()
-    ).decode()
-    payload = {"message": message, "content": content}
-    if sha:
-        payload["sha"] = sha
-    r = requests.put(url, headers=_headers(), json=payload)
-    r.raise_for_status()
-
-
-def load_clients_db() -> dict:
-    """
-    Devuelve {client_name: [{"contact": ..., "title": ..., "mobile": ...,
-    "email": ...}, ...]}.
-    Vacío si el archivo aún no existe. Registros antiguos sin "title"/"mobile"
-    siguen funcionando (se leen como cadena vacía).
-    """
-    data, _ = _get_clients_db()
-    return data
-
-
-def upsert_client_contact(client: str, contact: str, email: str, title: str = "", mobile: str = ""):
-    """
-    Añade el cliente/contacto si no existe, o actualiza título/móvil/email si el
-    contacto ya existía con datos distintos. No falla si todos los campos de
-    contacto vienen vacíos (simplemente no agrega una entrada sin nombre).
-    """
-    client = (client or "").strip()
-    if not client:
-        return
-
-    contact = (contact or "").strip()
-    email   = (email or "").strip()
-    title   = (title or "").strip()
-    mobile  = (mobile or "").strip()
-
-    data, sha = _get_clients_db()
-    contacts = data.get(client, [])
-
-    found = False
-    for c in contacts:
-        if c.get("contact", "").strip().lower() == contact.lower():
-            if email and c.get("email") != email:
-                c["email"] = email
-            if title and c.get("title") != title:
-                c["title"] = title
-            if mobile and c.get("mobile") != mobile:
-                c["mobile"] = mobile
-            found = True
-            break
-
-    if not found and (contact or email or title or mobile):
-        contacts.append({
-            "contact": contact,
-            "email":   email,
-            "title":   title,
-            "mobile":  mobile,
-        })
-
-    data[client] = contacts
-    _save_clients_db(data, sha, f"Update client contacts for {client}")
-
-
-# ── CRUD adicional para la página de administración de clientes (Clients.py) ──
-def create_client_company(client: str):
-    """Crea una empresa vacía (sin contactos todavía) si aún no existe."""
-    client = (client or "").strip()
-    if not client:
-        return
-    data, sha = _get_clients_db()
-    if client not in data:
-        data[client] = []
-        _save_clients_db(data, sha, f"Create client company {client}")
-
-
-def rename_client_company(old_name: str, new_name: str):
-    """Renombra una empresa. Si ya existe una empresa con el nuevo nombre,
-    fusiona los contactos (evitando duplicados por nombre de contacto)."""
-    old_name = (old_name or "").strip()
-    new_name = (new_name or "").strip()
-    if not old_name or not new_name or old_name == new_name:
-        return
-
-    data, sha = _get_clients_db()
-    if old_name not in data:
-        return
-
-    contacts = data.pop(old_name)
-    existing = data.get(new_name, [])
-    existing_names = {c.get("contact", "").strip().lower() for c in existing}
-    for c in contacts:
-        if c.get("contact", "").strip().lower() not in existing_names:
-            existing.append(c)
-    data[new_name] = existing
-    _save_clients_db(data, sha, f"Rename client company {old_name} -> {new_name}")
-
-
-def delete_client_company(client: str):
-    """Borra una empresa completa junto con todos sus contactos."""
-    client = (client or "").strip()
-    data, sha = _get_clients_db()
-    if client in data:
-        del data[client]
-        _save_clients_db(data, sha, f"Delete client company {client}")
-
-
-def delete_client_contact(client: str, contact: str):
-    """Borra un contacto específico dentro de una empresa (la empresa
-    permanece, aunque quede sin contactos)."""
-    client  = (client or "").strip()
-    contact = (contact or "").strip()
-    data, sha = _get_clients_db()
-    contacts = data.get(client, [])
-    new_contacts = [c for c in contacts if c.get("contact", "").strip().lower() != contact.lower()]
-    if len(new_contacts) != len(contacts):
-        data[client] = new_contacts
-        _save_clients_db(data, sha, f"Delete contact {contact} from {client}")
-
-
-def update_client_contact(
-    client:      str,
-    old_contact: str,
-    new_contact: str,
-    email:       str = "",
-    title:       str = "",
-    mobile:      str = "",
-):
-    """
-    Crea o actualiza (incluyendo renombrar) un contacto dentro de una empresa.
-    - Si 'old_contact' viene vacío -> se trata como contacto nuevo.
-    - Si 'old_contact' viene lleno -> busca ese contacto y lo actualiza,
-      incluyendo el posible cambio de nombre a 'new_contact'.
-    """
-    client = (client or "").strip()
-    if not client:
-        return
-
-    old_contact = (old_contact or "").strip()
-    new_contact = (new_contact or "").strip()
-    email       = (email or "").strip()
-    title       = (title or "").strip()
-    mobile      = (mobile or "").strip()
-
-    data, sha = _get_clients_db()
-    contacts = data.get(client, [])
-
-    updated = False
-    if old_contact:
-        for c in contacts:
-            if c.get("contact", "").strip().lower() == old_contact.lower():
-                c["contact"] = new_contact or old_contact
-                c["email"]   = email
-                c["title"]   = title
-                c["mobile"]  = mobile
-                updated = True
-                break
-
-    if not updated and (new_contact or email or title or mobile):
-        contacts.append({
-            "contact": new_contact,
-            "email":   email,
-            "title":   title,
-            "mobile":  mobile,
-        })
-
-    data[client] = contacts
-    _save_clients_db(data, sha, f"Update contact for {client}")
