@@ -139,12 +139,14 @@ def _start_new_contact_for(company: str):
 def _reset_co_form():
     for key in CO_SEED_KEYS + CO_WIDGET_KEYS:
         st.session_state.pop(key, None)
+    st.session_state.pop("co_addresses_editor", None)
     st.session_state["co_seed_name"]     = ""
     st.session_state["co_original_name"] = ""
 
 
 def _handle_add_company_click():
     _reset_co_form()
+    st.session_state["co_addresses_editor"] = []
     _open_co_form()
 
 
@@ -163,6 +165,7 @@ def _start_edit_company(company: str, info: dict):
     st.session_state["co_phone"]         = info.get("phone", "")
     st.session_state["co_website"]       = info.get("website", "")
     st.session_state["co_notes"]         = info.get("notes", "")
+    st.session_state["co_addresses_editor"] = list(info.get("addresses", []))
     _open_co_form()
 
 
@@ -260,6 +263,7 @@ def _handle_save_company():
         return
 
     original_name = st.session_state.get("co_original_name", "").strip()
+    addresses_df  = st.session_state.get("co_addresses_table")
 
     try:
         if original_name and original_name != name_val:
@@ -274,6 +278,10 @@ def _handle_save_company():
             website=st.session_state.get("co_website", "").strip(),
             notes=st.session_state.get("co_notes", "").strip(),
         )
+
+        if addresses_df is not None:
+            addresses_list = addresses_df.fillna("").to_dict("records")
+            clients_repo.set_company_addresses(name_val, addresses_list)
 
         _flash(f"✅ Company saved — {name_val}")
         _refresh_db()
@@ -307,7 +315,7 @@ def _handle_delete_company(company: str):
         _flash(f"❌ Error deleting company: {e}", "error")
 
 
-# ── Acciones — ADDRESSES ─────────────────────────────────────────────────────
+# ── Acciones — ADDRESSES (fila suelta, fuera del form de edición) ───────────
 def _start_add_address(company: str):
     for key in ADDR_WIDGET_KEYS:
         st.session_state.pop(key, None)
@@ -513,7 +521,6 @@ def _render_company_form(companies_db: dict):
         if is_editing:
             st.text_input("🏢 Company name", key="co_name_new_edit",
                           value=st.session_state.get("co_seed_name", ""))
-            # Al editar, el nombre "efectivo" es siempre el del text_input.
             st.session_state["co_name_select"] = NEW_COMPANY_LABEL
             st.session_state["co_name_new"] = st.session_state.get("co_name_new_edit", "")
             name_value = st.session_state["co_name_new"].strip()
@@ -537,6 +544,36 @@ def _render_company_form(companies_db: dict):
             st.text_input("🌐 Website", key="co_website")
 
         st.text_area("📝 Notes", key="co_notes", height=80)
+
+        # ── Gestión de múltiples direcciones/edificios ───────────────────────
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        st.markdown("**📍 Addresses** — un edificio por fila, añade tantas como necesites")
+
+        import pandas as pd
+        default_addr_cols = ["label", "line1", "line2", "city", "state", "zip", "country"]
+        seed_addresses = st.session_state.get("co_addresses_editor", [])
+        addr_df = pd.DataFrame(seed_addresses) if seed_addresses else pd.DataFrame(columns=default_addr_cols)
+        for col in default_addr_cols:
+            if col not in addr_df.columns:
+                addr_df[col] = ""
+        addr_df = addr_df[default_addr_cols]
+
+        st.data_editor(
+            addr_df,
+            key="co_addresses_table",
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "label":   st.column_config.TextColumn("Label (e.g. HQ, Warehouse)", width="medium"),
+                "line1":   st.column_config.TextColumn("Address line 1", width="large"),
+                "line2":   st.column_config.TextColumn("Address line 2", width="medium"),
+                "city":    st.column_config.TextColumn("City", width="small"),
+                "state":   st.column_config.TextColumn("State", width="small"),
+                "zip":     st.column_config.TextColumn("Zip", width="small"),
+                "country": st.column_config.TextColumn("Country", width="small"),
+            },
+        )
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -596,11 +633,25 @@ def _render_browse_contacts(clients_db: dict):
         st.info("No contacts saved yet — click **➕ Add contact** above to add your first one.")
         return
 
-    col_f, _ = st.columns([1, 3])
-    with col_f:
-        search = st.text_input("🔎 Search company", key="client_search", placeholder="Type to filter...")
+    all_companies = sorted(clients_db.keys(), key=str.lower)
 
-    companies = sorted(clients_db.keys(), key=str.lower)
+    col_f1, col_f2 = st.columns([1.4, 1.6])
+    with col_f1:
+        company_filter = st.selectbox(
+            "🏢 Filter by company",
+            ["All companies"] + all_companies,
+            key="client_company_filter",
+        )
+    with col_f2:
+        search = st.text_input(
+            "🔎 Search company",
+            key="client_search",
+            placeholder="Type a letter or word to filter...",
+        )
+
+    companies = all_companies
+    if company_filter != "All companies":
+        companies = [c for c in companies if c == company_filter]
     if search:
         companies = [c for c in companies if search.lower() in c.lower()]
 
@@ -612,7 +663,10 @@ def _render_browse_contacts(clients_db: dict):
 
     for company in companies:
         contacts = clients_db.get(company, [])
-        with st.expander(f"🏢 {company}  ·  {len(contacts)} contact(s)", expanded=False):
+        with st.expander(
+            f"🏢 {company}  ·  {len(contacts)} contact(s)",
+            expanded=(company_filter != "All companies"),
+        ):
 
             if contacts:
                 hc1, hc2, hc3, hc4, hc5, hc6 = st.columns(row_widths)
@@ -696,7 +750,7 @@ def _render_browse_companies(companies_db: dict):
                     )
                     ac1, ac2, ac3 = st.columns([1.4, 4, 1.2])
                     ac1.write(f"**{addr.get('label') or '—'}**")
-                    ac2.write(line or "��")
+                    ac2.write(line or "—")
                     with ac3:
                         eb, db = st.columns(2)
                         with eb:
