@@ -1,5 +1,5 @@
 import streamlit as st
-from tools.quotes import quotes_repo
+from tools.clients import clients_repo
 
 
 NEW_COMPANY_LABEL = "➕ New company..."
@@ -26,9 +26,6 @@ WIDGET_KEYS = [
 
 
 # ── Flash messages ──────────────────────────────────────────────────────────────
-# Streamlit no permite llamar st.success/st.error de forma fiable dentro de un
-# on_click callback, así que guardamos el mensaje en session_state y lo
-# mostramos al comienzo del siguiente render.
 def _flash(msg: str, kind: str = "success"):
     st.session_state["_client_flash"] = (kind, msg)
 
@@ -40,11 +37,11 @@ def _show_flash():
         getattr(st, kind)(msg)
 
 
-# ── Data helpers ────────────���────────────────────────────────────────────────
+# ── Data helpers ─────────────────────────────────────────────────────────────
 def _load_db() -> dict:
     if "clients_db_page" not in st.session_state:
         try:
-            st.session_state["clients_db_page"] = quotes_repo.load_clients_db()
+            st.session_state["clients_db_page"] = clients_repo.load_clients_db()
         except Exception as e:
             st.session_state["clients_db_page"] = {}
             st.error(f"❌ Error loading clients database: {e}")
@@ -56,10 +53,6 @@ def _refresh_db():
 
 
 # ── Form open/close state ────────────────────────────────────────────────────
-# El formulario de alta/edición ya NO se muestra siempre: por defecto la
-# página enseña directamente el listado de clientes. Solo se despliega
-# cuando el usuario pulsa "➕ Add client" (arriba a la derecha), edita un
-# contacto (✏️) o añade un contacto a una empresa existente (➕ Add contact).
 def _open_form():
     st.session_state["client_form_open"] = True
 
@@ -68,8 +61,7 @@ def _close_form():
     st.session_state["client_form_open"] = False
 
 
-# ── Form state helpers (se usan SOLO como on_click callbacks de botones —
-# nunca como on_change de un selectbox, que es lo que causaba el KeyError) ──
+# ── Form state helpers ───────────────────────────────────────────────────────
 def _reset_form():
     for key in SEED_KEYS + WIDGET_KEYS:
         st.session_state.pop(key, None)
@@ -80,21 +72,16 @@ def _reset_form():
 
 
 def _handle_add_client_click():
-    """Botón 'Add client' de arriba: abre el formulario limpio, listo para
-    dar de alta un cliente/contacto nuevo."""
     _reset_form()
     _open_form()
 
 
 def _handle_cancel_form():
-    """Cierra el formulario y lo deja limpio, volviendo directamente al
-    listado."""
     _reset_form()
     _close_form()
 
 
 def _start_edit(company: str, contact: dict):
-    """Carga el formulario con los datos de un contacto existente para editarlo."""
     for key in WIDGET_KEYS:
         st.session_state.pop(key, None)
     st.session_state["cf_seed_company"]     = company
@@ -105,7 +92,6 @@ def _start_edit(company: str, contact: dict):
 
 
 def _start_new_contact_for(company: str):
-    """Prepara el formulario para agregar un contacto nuevo a una empresa existente."""
     for key in WIDGET_KEYS:
         st.session_state.pop(key, None)
     st.session_state["cf_seed_company"]     = company
@@ -116,10 +102,6 @@ def _start_new_contact_for(company: str):
 
 
 # ── Acciones (on_click callbacks de botones) ─────────────────────────────────
-# Estas SÍ son seguras como callbacks: solo LEEN valores de widgets que ya
-# terminaron de renderizarse en este mismo run (el botón siempre va después
-# de los campos en la página), nunca escriben la clave de un widget que
-# todavía se está construyendo.
 def _handle_save():
     company_choice = st.session_state.get("cf_company_select", NEW_COMPANY_LABEL)
     company_val = (
@@ -140,14 +122,11 @@ def _handle_save():
     original_company = st.session_state.get("cf_original_company", "").strip()
 
     try:
-        quotes_repo.create_client_company(company_val)
+        clients_repo.create_client_company(company_val)
 
-        # Si estamos "creando" un contacto (old_contact vacío) pero ya existe
-        # uno con el mismo nombre en esta empresa, lo tratamos como una
-        # actualización en vez de crear un duplicado.
         effective_old_contact = original_contact
         if not effective_old_contact and contact_val:
-            fresh_db = quotes_repo.load_clients_db()
+            fresh_db = clients_repo.load_clients_db()
             existing = fresh_db.get(company_val, [])
             match = next(
                 (c for c in existing if c.get("contact", "").strip().lower() == contact_val.lower()),
@@ -156,7 +135,7 @@ def _handle_save():
             if match:
                 effective_old_contact = match.get("contact", "")
 
-        quotes_repo.update_client_contact(
+        clients_repo.update_client_contact(
             client=company_val,
             old_contact=effective_old_contact,
             new_contact=contact_val,
@@ -165,10 +144,8 @@ def _handle_save():
             mobile=st.session_state.get("cf_mobile", "").strip(),
         )
 
-        # Si el contacto se movió de empresa (se editó y se cambió el
-        # dropdown de Company), lo quitamos de la empresa original.
         if original_contact and original_company and original_company != company_val:
-            quotes_repo.delete_client_contact(original_company, original_contact)
+            clients_repo.delete_client_contact(original_company, original_contact)
 
         _flash(f"✅ Saved — {company_val}" + (f" / {contact_val}" if contact_val else ""))
         _refresh_db()
@@ -182,7 +159,7 @@ def _handle_delete_contact_from_form():
     company = st.session_state.get("cf_original_company", "")
     contact = st.session_state.get("cf_original_contact", "")
     try:
-        quotes_repo.delete_client_contact(company, contact)
+        clients_repo.delete_client_contact(company, contact)
         _flash(f"✅ Contact deleted: {contact}")
         _refresh_db()
         _reset_form()
@@ -193,10 +170,9 @@ def _handle_delete_contact_from_form():
 
 def _handle_delete_contact_row(company: str, contact_name: str):
     try:
-        quotes_repo.delete_client_contact(company, contact_name)
+        clients_repo.delete_client_contact(company, contact_name)
         _flash(f"✅ Deleted {contact_name}")
         _refresh_db()
-        # si justo ese contacto estaba cargado en el formulario, lo limpiamos
         if (
             st.session_state.get("cf_original_company") == company
             and st.session_state.get("cf_original_contact") == contact_name
@@ -217,7 +193,7 @@ def _cancel_delete_company(company: str):
 
 def _handle_delete_company(company: str):
     try:
-        quotes_repo.delete_client_company(company)
+        clients_repo.delete_client_company(company)
         _flash(f"✅ Deleted company {company}")
         _refresh_db()
         st.session_state.pop(f"confirm_delete_company_{company}", None)
@@ -240,7 +216,6 @@ def _render_form(clients_db: dict):
             unsafe_allow_html=True,
         )
 
-        # ── Company ──────────────────────────────────────────────────────────
         company_options = sorted(clients_db.keys()) + [NEW_COMPANY_LABEL]
         seed_company = st.session_state.get("cf_seed_company", "")
         default_idx = (
@@ -265,10 +240,6 @@ def _render_form(clients_db: dict):
         else:
             company_value = company_choice
 
-        # Si la empresa efectiva cambió desde el último render, el contacto
-        # elegido ya no aplica → se limpia ANTES de dibujar el selectbox de
-        # contacto (comparación simple top-a-abajo, sin callbacks, así que
-        # no hay ninguna condición de carrera posible).
         if st.session_state.get("_cf_last_seen_company") != company_value:
             st.session_state.pop("cf_contact_select", None)
             st.session_state.pop("cf_contact_new", None)
@@ -279,7 +250,6 @@ def _render_form(clients_db: dict):
 
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
-        # ── Contact Name / Contact Title ────────────────────────────────────
         cc1, cc2 = st.columns(2)
         with cc1:
             contacts_list   = clients_db.get(company_value, [])
@@ -314,9 +284,6 @@ def _render_form(clients_db: dict):
             if contact_choice == NEW_CONTACT_LABEL else contact_choice
         )
 
-        # Si se elige un contacto existente y cambió desde el último render,
-        # se precargan Title/Mobile/Email desde la base — el usuario sigue
-        # pudiendo sobreescribirlos libremente después.
         matched = next((c for c in contacts_list if c.get("contact") == contact_choice), None) \
             if contact_choice != NEW_CONTACT_LABEL else None
 
@@ -334,7 +301,6 @@ def _render_form(clients_db: dict):
         with cc2:
             st.text_input("💼 Contact Title", key="cf_title")
 
-        # ── Mobile Phone / Email ─────────────────────────────────────────────
         cc3, cc4 = st.columns(2)
         with cc3:
             st.text_input("📱 Mobile Phone", key="cf_mobile")
@@ -390,9 +356,6 @@ def _render_browse(clients_db: dict):
 
     for company in companies:
         contacts = clients_db.get(company, [])
-        # Cerrado por defecto: se quiere ver rápido el listado completo de
-        # empresas (solo el nombre), y que cada una se expanda a demanda
-        # con un clic cuando el usuario quiera ver sus contactos.
         with st.expander(f"🏢 {company}  ·  {len(contacts)} contact(s)", expanded=False):
 
             if contacts:
@@ -462,7 +425,7 @@ def show():
     title_col, add_col = st.columns([5, 1.4])
     with title_col:
         st.title("👥 CLIENTS")
-        st.caption("Manage your client and contact database — shared with the Quotes form.")
+        st.caption("Manage your client and contact database — used by the Quotes form.")
     with add_col:
         st.markdown("<div style='height:22px'></div>", unsafe_allow_html=True)
         st.button(
