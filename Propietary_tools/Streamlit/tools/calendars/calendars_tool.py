@@ -531,14 +531,14 @@ def _render_week(cells: list, year: int, month: int, day_index: dict, selected_d
 def _render_month(year: int, month: int, day_index: dict, selected_date_str: str, today: date):
     st.markdown(
         f"<div style='text-align:center;font-weight:700;color:#1a2a3a;"
-        f"font-size:0.75rem;margin-bottom:2px;'>{MONTH_NAMES[month - 1]} {year}</div>",
+        f"font-size:0.68rem;margin-bottom:1px;'>{MONTH_NAMES[month - 1]} {year}</div>",
         unsafe_allow_html=True,
     )
     header_cols = st.columns(7)
     for c, wd in zip(header_cols, WEEKDAY_LABELS):
         with c:
             st.markdown(
-                f"<div style='text-align:center;font-size:0.6rem;color:#888;'>{wd}</div>",
+                f"<div style='text-align:center;font-size:0.52rem;color:#888;'>{wd}</div>",
                 unsafe_allow_html=True,
             )
 
@@ -546,9 +546,10 @@ def _render_month(year: int, month: int, day_index: dict, selected_date_str: str
         """
         <style>
           div[data-testid="stButton"] button {
-              padding: 0.15rem 0.2rem !important;
-              min-height: 1.6rem !important;
-              font-size: 0.68rem !important;
+              padding: 0.05rem 0.1rem !important;
+              min-height: 1.15rem !important;
+              height: 1.15rem !important;
+              font-size: 0.58rem !important;
               line-height: 1 !important;
           }
         </style>
@@ -736,7 +737,7 @@ def show():
     for row_start in range(0, len(months_to_show), 2):
         row_months = months_to_show[row_start:row_start + 2]
         if len(row_months) == 2:
-            _, col_left, col_gap, col_right, _ = st.columns([1, 2.6, 0.3, 2.6, 1])
+            _, col_left, col_gap, col_right, _ = st.columns([1.8, 1.9, 0.3, 1.9, 1.8])
             with col_left:
                 _render_month(*row_months[0], day_index, st.session_state["cal_selected_date"], today)
             with col_right:
