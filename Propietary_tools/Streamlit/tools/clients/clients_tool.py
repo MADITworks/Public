@@ -28,7 +28,7 @@ WIDGET_KEYS = [
 CO_SEED_KEYS = ["co_seed_name", "co_original_name"]
 
 CO_WIDGET_KEYS = [
-    "co_name_select", "co_name_new",
+    "co_name_select", "co_name_new", "co_display_name",
     "co_abn", "co_industry", "co_phone", "co_website", "co_notes",
     "_co_last_seen_name",
 ]
@@ -77,6 +77,13 @@ def _refresh_db():
     st.session_state.pop("companies_db_page", None)
 
 
+def _display_name_for(companies_db: dict, company: str) -> str:
+    """Nombre a mostrar en Contacts para una empresa: usa 'display_name' si
+    está configurado, si no cae de vuelta al nombre completo."""
+    info = companies_db.get(company, {})
+    return (info.get("display_name") or "").strip() or company
+
+
 # ── Form open/close state (contacts) ─────────────────────────────────────────
 def _open_form():
     st.session_state["client_form_open"] = True
@@ -95,7 +102,7 @@ def _close_co_form():
     st.session_state["company_form_open"] = False
 
 
-# ── Form state helpers (contacts) ────────────────────────────────────────────
+# ── Form state helpers (contacts) ───────────────────────���────────────────────
 def _reset_form():
     for key in SEED_KEYS + WIDGET_KEYS:
         st.session_state.pop(key, None)
@@ -162,6 +169,7 @@ def _start_edit_company(company: str, info: dict):
     st.session_state.pop("co_addresses_table", None)
     st.session_state["co_seed_name"]     = company
     st.session_state["co_original_name"] = company
+    st.session_state["co_display_name"]  = info.get("display_name", "")
     st.session_state["co_abn"]           = info.get("abn", "")
     st.session_state["co_industry"]      = info.get("industry", "")
     st.session_state["co_phone"]         = info.get("phone", "")
@@ -270,14 +278,12 @@ def _extract_addresses_from_editor(raw) -> list[dict]:
     if raw is None:
         return []
 
-    # Caso normal: ya es un DataFrame.
     if hasattr(raw, "to_dict"):
         try:
             return raw.fillna("").to_dict("records")
         except Exception:
             pass
 
-    # Caso dict estilo {"edited_rows": ..., "added_rows": ..., "deleted_rows": ...}
     if isinstance(raw, dict) and ("added_rows" in raw or "edited_rows" in raw):
         base = st.session_state.get("co_addresses_editor", [])
         rows = [dict(r) for r in base]
@@ -297,7 +303,6 @@ def _extract_addresses_from_editor(raw) -> list[dict]:
 
         return [{c: (r.get(c, "") or "") for c in cols} for r in rows]
 
-    # Caso lista de dicts directamente.
     if isinstance(raw, list):
         return raw
 
@@ -324,6 +329,7 @@ def _handle_save_company():
         clients_repo.create_client_company(name_val)
         clients_repo.update_company_info(
             client=name_val,
+            display_name=st.session_state.get("co_display_name", "").strip(),
             abn=st.session_state.get("co_abn", "").strip(),
             industry=st.session_state.get("co_industry", "").strip(),
             phone=st.session_state.get("co_phone", "").strip(),
@@ -430,7 +436,7 @@ def _handle_delete_address(company: str, index: int):
 
 
 # ── Contact Form ──────────────────────────────────────────────────────────────
-def _render_form(clients_db: dict):
+def _render_form(clients_db: dict, companies_db: dict):
     is_editing = bool(st.session_state.get("cf_original_contact"))
     heading = "✏️ EDIT CONTACT" if is_editing else "➕ NEW CONTACT"
 
@@ -449,7 +455,10 @@ def _render_form(clients_db: dict):
             else len(company_options) - 1
         )
 
-        st.selectbox("🏢 Company", company_options, index=default_idx, key="cf_company_select")
+        st.selectbox(
+            "🏢 Company", company_options, index=default_idx, key="cf_company_select",
+            format_func=lambda name: _display_name_for(companies_db, name) if name != NEW_COMPANY_LABEL else name,
+        )
         company_choice = st.session_state["cf_company_select"]
 
         if company_choice == NEW_COMPANY_LABEL:
@@ -570,15 +579,21 @@ def _render_company_form(companies_db: dict):
         )
 
         if is_editing:
-            st.text_input("🏢 Company name", key="co_name_new_edit",
+            st.text_input("🏢 Company name (full legal name)", key="co_name_new_edit",
                           value=st.session_state.get("co_seed_name", ""))
             st.session_state["co_name_select"] = NEW_COMPANY_LABEL
             st.session_state["co_name_new"] = st.session_state.get("co_name_new_edit", "")
             name_value = st.session_state["co_name_new"].strip()
         else:
-            st.text_input("🏢 Company name", key="co_name_new")
+            st.text_input("🏢 Company name (full legal name)", key="co_name_new")
             st.session_state["co_name_select"] = NEW_COMPANY_LABEL
             name_value = st.session_state.get("co_name_new", "").strip()
+
+        st.text_input(
+            "🏷️ Display name in Contacts (e.g. DCS)",
+            key="co_display_name",
+            placeholder="Leave empty to use the full company name",
+        )
 
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
@@ -676,8 +691,8 @@ def _render_address_form():
         st.button("✖ Cancel", use_container_width=True, on_click=_handle_cancel_address)
 
 
-# ── Browse / list — CONTACTS ─────────────────────���───────────────────────────
-def _render_browse_contacts(clients_db: dict):
+# ── Browse / list — CONTACTS ─────────────────────────────────────────────────
+def _render_browse_contacts(clients_db: dict, companies_db: dict):
     st.markdown("### 📚 Contact Directory")
 
     if not clients_db:
@@ -692,6 +707,7 @@ def _render_browse_contacts(clients_db: dict):
             "🏢 Filter by company",
             ["All companies"] + all_companies,
             key="client_company_filter",
+            format_func=lambda name: _display_name_for(companies_db, name) if name != "All companies" else name,
         )
     with col_f2:
         search = st.text_input(
@@ -713,7 +729,8 @@ def _render_browse_contacts(clients_db: dict):
     # ── Empresa específica seleccionada: tabla plana de sus contactos ─────
     if company_filter != "All companies":
         contacts = [c for c in clients_db.get(company_filter, []) if _matches_search(c)]
-        st.markdown(f"**🏢 {company_filter}**  ·  {len(contacts)} contact(s)")
+        shown_name = _display_name_for(companies_db, company_filter)
+        st.markdown(f"**🏢 {shown_name}**  ·  {len(contacts)} contact(s)")
         _render_contacts_table(contacts, company_for_actions=company_filter)
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
@@ -748,7 +765,7 @@ def _render_browse_contacts(clients_db: dict):
 
     for i, (company, c) in enumerate(flat_rows):
         c1, c2, c3, c4, c5, c6, c7 = st.columns(row_widths)
-        c1.write(company)
+        c1.write(_display_name_for(companies_db, company))
         c2.write(c.get("contact", "") or "—")
         c3.write(c.get("title", "") or "—")
         c4.write(c.get("mobile", "") or "—")
@@ -820,12 +837,15 @@ def _render_browse_companies(companies_db: dict):
         return
 
     for company in names:
-        info      = companies_db.get(company, {})
-        addresses = info.get("addresses", [])
+        info         = companies_db.get(company, {})
+        addresses    = info.get("addresses", [])
+        display_name = (info.get("display_name") or "").strip()
+        label        = f"🏢 {display_name} ({company})" if display_name else f"🏢 {company}"
 
-        with st.expander(f"🏢 {company}  ·  {len(addresses)} address(es)", expanded=False):
+        with st.expander(f"{label}  ·  {len(addresses)} address(es)", expanded=False):
             ic1, ic2 = st.columns(2)
             with ic1:
+                st.write(f"**Display name in Contacts:** {display_name or '— (uses full name)'}")
                 st.write(f"**ABN:** {info.get('abn') or '—'}")
                 st.write(f"**Industry:** {info.get('industry') or '—'}")
             with ic2:
@@ -950,8 +970,9 @@ def show():
             st.divider()
         _render_browse_companies(companies_db)
     else:
-        clients_db = _load_db()
+        clients_db   = _load_db()
+        companies_db = _load_companies()
         if st.session_state["client_form_open"]:
-            _render_form(clients_db)
+            _render_form(clients_db, companies_db)
             st.divider()
-        _render_browse_contacts(clients_db)
+        _render_browse_contacts(clients_db, companies_db)
