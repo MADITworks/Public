@@ -204,7 +204,7 @@ def _render_fields(clients_db: dict):
 def show_client_step():
     """Punto de entrada público: renderiza el Paso 1 completo (formulario +
     Proposal Title/Date + botón único 'Verify & Continue' con validación)."""
-    from tools import quotes_repo
+    from tools.quotes import quotes_repo
 
     st.markdown("### 📝 Step 1 — Client &amp; Contact")
     st.caption("Fill in everything, then verify to move on to the quote.")
