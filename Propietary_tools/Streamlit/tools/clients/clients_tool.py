@@ -102,7 +102,7 @@ def _close_co_form():
     st.session_state["company_form_open"] = False
 
 
-# ── Form state helpers (contacts) ───────────────────────���────────────────────
+# ── Form state helpers (contacts) ─────────────────────────────────────────────
 def _reset_form():
     for key in SEED_KEYS + WIDGET_KEYS:
         st.session_state.pop(key, None)
@@ -310,6 +310,14 @@ def _extract_addresses_from_editor(raw) -> list[dict]:
 
 
 def _handle_save_company():
+    """
+    Guarda la empresa (rename + info general + direcciones) con UNA sola
+    llamada a save_company_full(), que hace una única lectura + una única
+    escritura del archivo. Antes se llamaba a create_client_company +
+    update_company_info + set_company_addresses por separado, lo que podía
+    causar un 409 Conflict de GitHub si la lectura de la 2ª/3ª llamada no
+    veía todavía el commit de la anterior.
+    """
     name_choice = st.session_state.get("co_name_select", NEW_COMPANY_LABEL)
     name_val = (
         st.session_state.get("co_name_new", "").strip()
@@ -321,24 +329,20 @@ def _handle_save_company():
 
     original_name = st.session_state.get("co_original_name", "").strip()
     addresses_raw = st.session_state.get("co_addresses_table")
+    addresses_list = _extract_addresses_from_editor(addresses_raw)
 
     try:
-        if original_name and original_name != name_val:
-            clients_repo.rename_client_company(original_name, name_val)
-
-        clients_repo.create_client_company(name_val)
-        clients_repo.update_company_info(
+        clients_repo.save_company_full(
             client=name_val,
+            original_name=original_name,
             display_name=st.session_state.get("co_display_name", "").strip(),
             abn=st.session_state.get("co_abn", "").strip(),
             industry=st.session_state.get("co_industry", "").strip(),
             phone=st.session_state.get("co_phone", "").strip(),
             website=st.session_state.get("co_website", "").strip(),
             notes=st.session_state.get("co_notes", "").strip(),
+            addresses=addresses_list,
         )
-
-        addresses_list = _extract_addresses_from_editor(addresses_raw)
-        clients_repo.set_company_addresses(name_val, addresses_list)
 
         _flash(f"✅ Company saved — {name_val}")
         _refresh_db()
