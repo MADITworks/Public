@@ -472,7 +472,7 @@ from tools.quotes.quotes_clients import (
 # ── Repository / navigation state helpers ───────────────────────────────────────
 NEW_QUOTE_STATE_KEYS = [
     "items_saved", "quote_file_id", "meta", "distributor", "edit_mode",
-    "edit_counter", "edit_session_id", "items_snapshot", "quote_saved_record", "loaded_record_id",
+    "edit_counter", "reorder_pending_idx", "items_snapshot", "quote_saved_record", "loaded_record_id",
     "original_excel_bytes", "original_excel_name",
     "client_step_done", "confirmed_client_info", "opened_from_history",
 ]
@@ -805,13 +805,10 @@ def _show_new_quote():
         with col_btn:
             st.html("<div style='padding-top:28px'>")
             if st.button("✏️ Edit", key="btn_edit", use_container_width=True):
-                st.session_state["items_snapshot"]   = st.session_state["items_saved"].copy()
-                st.session_state["edit_mode"]        = True
-                st.session_state["edit_counter"]     = st.session_state.get("edit_counter", 0) + 1
-                # id estable durante toda la sesión de edición, para que el
-                # selector de "mover línea" NO se resetee en cada clic de
-                # ⬆️/⬇️ (solo cambia al entrar/salir de modo edición)
-                st.session_state["edit_session_id"]  = st.session_state.get("edit_session_id", 0) + 1
+                st.session_state["items_snapshot"] = st.session_state["items_saved"].copy()
+                st.session_state["edit_mode"]    = True
+                st.session_state["edit_counter"] = st.session_state.get("edit_counter", 0) + 1
+                st.session_state.pop("reorder_pending_idx", None)
                 st.rerun()
             st.html("</div>")
 
@@ -842,16 +839,22 @@ def _show_new_quote():
                     + str(r.get("Description", ""))[:60]
                     for i, r in snapshot.iterrows()
                 ]
-                # Key ESTABLE durante toda la sesión de edición (no depende de
-                # editor_key), así el desplegable conserva la línea
-                # seleccionada aunque la tabla de abajo se refresque tras
-                # cada movimiento.
-                session_id = st.session_state.get("edit_session_id", 0)
-                sel_key    = f"reorder_row_select_{session_id}"
-                sel_idx    = st.selectbox(
+                # sel_key cambia en cada movimiento (va ligado a editor_key),
+                # así que SIEMPRE es una key nueva para Streamlit — evita el
+                # error "cannot be modified after widget instantiated" que
+                # da si intentas sobrescribir la key de un widget ya creado
+                # en la misma ejecución. El valor de arranque de cada key
+                # nueva se controla con `index=`, tomado de
+                # reorder_pending_idx (la posición donde debe quedar
+                # seleccionada la línea que acabamos de mover).
+                pending_idx = st.session_state.pop("reorder_pending_idx", 0)
+                pending_idx = max(0, min(pending_idx, len(row_labels) - 1))
+                sel_key = f"reorder_row_select_{editor_key}"
+                sel_idx = st.selectbox(
                     "Selecciona la línea que quieres mover",
                     options=list(range(len(row_labels))),
                     format_func=lambda i: row_labels[i],
+                    index=pending_idx,
                     key=sel_key,
                 )
                 rc1, rc2, _ = st.columns([1, 1, 4])
@@ -862,10 +865,8 @@ def _show_new_quote():
                     ):
                         snap = snapshot.copy()
                         snap.iloc[[sel_idx - 1, sel_idx]] = snap.iloc[[sel_idx, sel_idx - 1]].values
-                        st.session_state["items_snapshot"] = snap.reset_index(drop=True)
-                        # la línea movida ahora está un puesto más arriba —
-                        # que el selector la siga para poder seguir subiéndola
-                        st.session_state[sel_key] = sel_idx - 1
+                        st.session_state["items_snapshot"]    = snap.reset_index(drop=True)
+                        st.session_state["reorder_pending_idx"] = sel_idx - 1
                         st.session_state["edit_counter"] = st.session_state.get("edit_counter", 0) + 1
                         st.rerun()
                 with rc2:
@@ -875,10 +876,8 @@ def _show_new_quote():
                     ):
                         snap = snapshot.copy()
                         snap.iloc[[sel_idx, sel_idx + 1]] = snap.iloc[[sel_idx + 1, sel_idx]].values
-                        st.session_state["items_snapshot"] = snap.reset_index(drop=True)
-                        # la línea movida ahora está un puesto más abajo —
-                        # que el selector la siga para poder seguir bajándola
-                        st.session_state[sel_key] = sel_idx + 1
+                        st.session_state["items_snapshot"]    = snap.reset_index(drop=True)
+                        st.session_state["reorder_pending_idx"] = sel_idx + 1
                         st.session_state["edit_counter"] = st.session_state.get("edit_counter", 0) + 1
                         st.rerun()
             else:
