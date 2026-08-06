@@ -469,6 +469,27 @@ from tools.quotes.quotes_clients import (
 )
 
 
+def _apply_number_reorder(df: pd.DataFrame) -> pd.DataFrame:
+    """Ordena las filas según el número escrito por el usuario en la columna
+    '#' (admite decimales, ej. 2.5, para insertar una línea entre otras dos)
+    y renumera el resultado 1, 2, 3... Las filas sin número (nuevas, en
+    blanco) se colocan al final, en el orden en que se añadieron."""
+    committed = df.copy().reset_index(drop=True)
+    order_col = pd.to_numeric(committed["#"], errors="coerce")
+    if order_col.notna().any():
+        fallback_base = order_col.max() + 1
+    else:
+        fallback_base = 0
+    order_col = order_col.fillna(
+        fallback_base + pd.Series(range(len(committed)), index=committed.index) * 0.0001
+    )
+    committed = committed.assign(_sort_order=order_col.values)
+    committed = committed.sort_values("_sort_order", kind="stable").drop(columns="_sort_order")
+    committed = committed.reset_index(drop=True)
+    committed["#"] = range(1, len(committed) + 1)
+    return committed
+
+
 # ── Repository / navigation state helpers ───────────────────────────────────────
 NEW_QUOTE_STATE_KEYS = [
     "items_saved", "quote_file_id", "meta", "distributor", "edit_mode",
@@ -822,7 +843,9 @@ def _show_new_quote():
             save_clicked = st.button("💾 Save", key="btn_save", type="primary", use_container_width=True)
             st.html("</div>")
 
-        cancel_col, _ = st.columns([1, 5])
+        reorder_col, cancel_col, _ = st.columns([1.3, 1, 3.7])
+        with reorder_col:
+            reorder_clicked = st.button("🔀 Reordenar", key="btn_reorder", use_container_width=True)
         with cancel_col:
             cancel_clicked = st.button("✖ Cancel", key="btn_cancel", use_container_width=True)
 
@@ -832,7 +855,7 @@ def _show_new_quote():
             "✏️ Edita **Unit Cost**, **Qty**, **Description** inline · "
             "Escribe un número en **#** para colocar esa línea donde quieras "
             "(puedes usar decimales, ej. 2.5, para meterla entre dos filas) — "
-            "al pulsar **Guardar** la tabla se reordena y renumera sola · "
+            "pulsa **🔀 Reordenar** para aplicar el orden cuando quieras (sin guardar) · "
             "Selecciona filas con el checkbox y presiona **Delete** para eliminarlas"
         )
 
@@ -845,7 +868,7 @@ def _show_new_quote():
             column_config={
                 "#": st.column_config.NumberColumn(
                     "#", width="small", step=0.5, format="%g",
-                    help="Escribe la posición donde quieres esta línea (puede ser decimal). Se reordena y renumera al Guardar.",
+                    help="Escribe la posición donde quieres esta línea (puede ser decimal). Pulsa 🔀 Reordenar para aplicarlo.",
                 ),
                 "SKU": st.column_config.TextColumn("SKU", width="medium"),
                 "Description": st.column_config.TextColumn("Description", width="large"),
@@ -855,31 +878,23 @@ def _show_new_quote():
             },
         )
 
+        if reorder_clicked:
+            snap = edited_df.copy().reset_index(drop=True)
+            snap["Unit Cost"]  = pd.to_numeric(snap["Unit Cost"],  errors="coerce").fillna(0.0)
+            snap["Qty"]        = pd.to_numeric(snap["Qty"],        errors="coerce").fillna(0).astype(int)
+            snap["Total Cost"] = snap["Unit Cost"] * snap["Qty"]
+            snap = _apply_number_reorder(snap)
+
+            st.session_state["items_snapshot"] = snap
+            st.session_state["edit_counter"]   = st.session_state.get("edit_counter", 0) + 1
+            st.rerun()
+
         if save_clicked:
             committed = edited_df.copy().reset_index(drop=True)
             committed["Unit Cost"]  = pd.to_numeric(committed["Unit Cost"],  errors="coerce").fillna(0.0)
             committed["Qty"]        = pd.to_numeric(committed["Qty"],        errors="coerce").fillna(0).astype(int)
             committed["Total Cost"] = committed["Unit Cost"] * committed["Qty"]
-
-            # ── Reordenar según el número escrito en "#" ──────────────────────
-            # El usuario coloca cada línea escribiendo la posición que quiere
-            # para ella en la columna "#" (admite decimales, ej. 2.5, para
-            # insertarla entre dos filas existentes). Al guardar: se ordena
-            # por ese valor (orden estable) y se renumera 1, 2, 3... para
-            # dejar una secuencia limpia. Las filas sin número (nuevas, en
-            # blanco) van al final, en el orden en que se añadieron.
-            order_col = pd.to_numeric(committed["#"], errors="coerce")
-            if order_col.notna().any():
-                fallback_base = order_col.max() + 1
-            else:
-                fallback_base = 0
-            order_col = order_col.fillna(
-                fallback_base + pd.Series(range(len(committed)), index=committed.index) * 0.0001
-            )
-            committed = committed.assign(_sort_order=order_col.values)
-            committed = committed.sort_values("_sort_order", kind="stable").drop(columns="_sort_order")
-            committed = committed.reset_index(drop=True)
-            committed["#"] = range(1, len(committed) + 1)
+            committed = _apply_number_reorder(committed)
 
             st.session_state["items_saved"] = committed
             st.session_state["edit_mode"]   = False
