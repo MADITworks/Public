@@ -472,7 +472,7 @@ from tools.quotes.quotes_clients import (
 # ── Repository / navigation state helpers ───────────────────────────────────────
 NEW_QUOTE_STATE_KEYS = [
     "items_saved", "quote_file_id", "meta", "distributor", "edit_mode",
-    "edit_counter", "reorder_pending_idx", "items_snapshot", "quote_saved_record", "loaded_record_id",
+    "edit_counter", "items_snapshot", "quote_saved_record", "loaded_record_id",
     "original_excel_bytes", "original_excel_name",
     "client_step_done", "confirmed_client_info", "opened_from_history",
 ]
@@ -808,7 +808,6 @@ def _show_new_quote():
                 st.session_state["items_snapshot"] = st.session_state["items_saved"].copy()
                 st.session_state["edit_mode"]    = True
                 st.session_state["edit_counter"] = st.session_state.get("edit_counter", 0) + 1
-                st.session_state.pop("reorder_pending_idx", None)
                 st.rerun()
             st.html("</div>")
 
@@ -829,64 +828,12 @@ def _show_new_quote():
 
         snapshot = st.session_state.get("items_snapshot", items).copy().reset_index(drop=True)
 
-        # ── Mover una línea completa (arriba / abajo) ──────────────────────────
-        with st.container(border=True):
-            st.markdown("**🔀 Mover una línea completa**")
-            if len(snapshot) > 1:
-                row_labels = [
-                    f"{i + 1}. "
-                    + (f"{str(r['SKU']).strip()} — " if str(r.get('SKU', '')).strip() else "")
-                    + str(r.get("Description", ""))[:60]
-                    for i, r in snapshot.iterrows()
-                ]
-                # sel_key cambia en cada movimiento (va ligado a editor_key),
-                # así que SIEMPRE es una key nueva para Streamlit — evita el
-                # error "cannot be modified after widget instantiated" que
-                # da si intentas sobrescribir la key de un widget ya creado
-                # en la misma ejecución. El valor de arranque de cada key
-                # nueva se controla con `index=`, tomado de
-                # reorder_pending_idx (la posición donde debe quedar
-                # seleccionada la línea que acabamos de mover).
-                pending_idx = st.session_state.pop("reorder_pending_idx", 0)
-                pending_idx = max(0, min(pending_idx, len(row_labels) - 1))
-                sel_key = f"reorder_row_select_{editor_key}"
-                sel_idx = st.selectbox(
-                    "Selecciona la línea que quieres mover",
-                    options=list(range(len(row_labels))),
-                    format_func=lambda i: row_labels[i],
-                    index=pending_idx,
-                    key=sel_key,
-                )
-                rc1, rc2, _ = st.columns([1, 1, 4])
-                with rc1:
-                    if st.button(
-                        "⬆️ Subir", key=f"btn_move_up_{editor_key}",
-                        use_container_width=True, disabled=(sel_idx == 0),
-                    ):
-                        snap = snapshot.copy()
-                        snap.iloc[[sel_idx - 1, sel_idx]] = snap.iloc[[sel_idx, sel_idx - 1]].values
-                        st.session_state["items_snapshot"]    = snap.reset_index(drop=True)
-                        st.session_state["reorder_pending_idx"] = sel_idx - 1
-                        st.session_state["edit_counter"] = st.session_state.get("edit_counter", 0) + 1
-                        st.rerun()
-                with rc2:
-                    if st.button(
-                        "⬇️ Bajar", key=f"btn_move_down_{editor_key}",
-                        use_container_width=True, disabled=(sel_idx == len(row_labels) - 1),
-                    ):
-                        snap = snapshot.copy()
-                        snap.iloc[[sel_idx, sel_idx + 1]] = snap.iloc[[sel_idx + 1, sel_idx]].values
-                        st.session_state["items_snapshot"]    = snap.reset_index(drop=True)
-                        st.session_state["reorder_pending_idx"] = sel_idx + 1
-                        st.session_state["edit_counter"] = st.session_state.get("edit_counter", 0) + 1
-                        st.rerun()
-            else:
-                st.caption("Necesitas al menos 2 líneas para poder reordenar.")
-
         st.caption(
-            "✏️ Edita **Unit Cost**, **Qty**, **Description** inline en la tabla de abajo · "
-            "Usa **⬆️ Subir / ⬇️ Bajar** arriba para mover una línea completa a otra posición "
-            "(el # se renumera solo) · Selecciona filas con el checkbox y presiona **Delete** para eliminarlas"
+            "✏️ Edita **Unit Cost**, **Qty**, **Description** inline · "
+            "Escribe un número en **#** para colocar esa línea donde quieras "
+            "(puedes usar decimales, ej. 2.5, para meterla entre dos filas) — "
+            "al pulsar **Guardar** la tabla se reordena y renumera sola · "
+            "Selecciona filas con el checkbox y presiona **Delete** para eliminarlas"
         )
 
         edited_df = st.data_editor(
@@ -897,8 +844,8 @@ def _show_new_quote():
             hide_index=True,
             column_config={
                 "#": st.column_config.NumberColumn(
-                    "#", width="small", disabled=True,
-                    help="Se numera automáticamente según el orden final de las filas.",
+                    "#", width="small", step=0.5, format="%g",
+                    help="Escribe la posición donde quieres esta línea (puede ser decimal). Se reordena y renumera al Guardar.",
                 ),
                 "SKU": st.column_config.TextColumn("SKU", width="medium"),
                 "Description": st.column_config.TextColumn("Description", width="large"),
@@ -913,9 +860,25 @@ def _show_new_quote():
             committed["Unit Cost"]  = pd.to_numeric(committed["Unit Cost"],  errors="coerce").fillna(0.0)
             committed["Qty"]        = pd.to_numeric(committed["Qty"],        errors="coerce").fillna(0).astype(int)
             committed["Total Cost"] = committed["Unit Cost"] * committed["Qty"]
-            # Renumera "#" según el orden final de las filas (el que ves en
-            # pantalla, ya sea porque las moviste con los botones ⬆️/⬇️ o
-            # porque añadiste/borraste líneas).
+
+            # ── Reordenar según el número escrito en "#" ──────────────────────
+            # El usuario coloca cada línea escribiendo la posición que quiere
+            # para ella en la columna "#" (admite decimales, ej. 2.5, para
+            # insertarla entre dos filas existentes). Al guardar: se ordena
+            # por ese valor (orden estable) y se renumera 1, 2, 3... para
+            # dejar una secuencia limpia. Las filas sin número (nuevas, en
+            # blanco) van al final, en el orden en que se añadieron.
+            order_col = pd.to_numeric(committed["#"], errors="coerce")
+            if order_col.notna().any():
+                fallback_base = order_col.max() + 1
+            else:
+                fallback_base = 0
+            order_col = order_col.fillna(
+                fallback_base + pd.Series(range(len(committed)), index=committed.index) * 0.0001
+            )
+            committed = committed.assign(_sort_order=order_col.values)
+            committed = committed.sort_values("_sort_order", kind="stable").drop(columns="_sort_order")
+            committed = committed.reset_index(drop=True)
             committed["#"] = range(1, len(committed) + 1)
 
             st.session_state["items_saved"] = committed
