@@ -2,7 +2,7 @@ import streamlit as st
 
 from tools.kanban import kanban_repo as kanban_repo
 
-DEFAULT_LISTS = ["Por hacer", "En proceso", "Hecho"]
+DEFAULT_LISTS = ["To Do", "In Progress", "Done"]
 DEFAULT_COLORS = ["#4A90D9", "#D9534F", "#5CB85C", "#F0AD4E", "#9B59B6", "#1ABC9C"]
 
 
