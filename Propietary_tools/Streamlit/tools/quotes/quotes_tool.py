@@ -649,10 +649,13 @@ def _show_history():
 
     st.caption(f"Showing {len(filtered_sorted)} quote(s)")
 
-    hc0, hc1, hc2, hc3, hc4, hc5, hc6, hc7, hc8 = st.columns([1.45, 1.7, 1.0, 1.35, 1.05, 1.15, 0.85, 1.0, 0.85])
+    hc0, hc1, hc2, hc2_exp, hc3, hc4, hc5, hc6, hc7, hc8 = st.columns(
+        [1.4, 1.5, 0.95, 0.95, 1.25, 1.0, 1.1, 0.8, 0.95, 0.8]
+    )
     hc0.markdown("**Company**")
     hc1.markdown("**Title**")
     hc2.markdown("**Date**")
+    hc2_exp.markdown("**Expiry Date**")
     hc3.markdown("**Quote #**")
     hc4.markdown("**Total (Sell)**")
     hc5.markdown("**Status**")
@@ -661,10 +664,13 @@ def _show_history():
     hc8.markdown("")
 
     for rec in filtered_sorted:
-        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.45, 1.7, 1.0, 1.35, 1.05, 1.15, 0.85, 1.0, 0.85])
+        c0, c1, c2, c2_exp, c3, c4, c5, c6, c7, c8 = st.columns(
+            [1.4, 1.5, 0.95, 0.95, 1.25, 1.0, 1.1, 0.8, 0.95, 0.8]
+        )
         c0.write(f"🏢 {_disp(rec.get('client', '—'))}")
         c1.write(rec.get("title", "—") or "—")
         c2.write(rec.get("date", "—"))
+        c2_exp.write(rec.get("expiry", "—") or "—")
         c3.write(f"#{rec.get('quote_number', '—')}  ({rec.get('distributor', '—')})")
         c4.write(fmt(rec.get("sell_total", 0)))
 
@@ -1028,13 +1034,6 @@ def _show_new_quote():
         st.html(render_summary_table(summary))
 
     # ── Save to Repository ───────────────────────────────────────────────────────
-    # Antes esta sección solo se mostraba "if not opened_from_history", lo
-    # que hacía imposible actualizar (o cambiar el cliente de) una quote ya
-    # guardada. Ahora se muestra siempre; el botón cambia a "Update Quote"
-    # cuando hay una quote cargada (loaded_record_id), y como ya se pasaba
-    # record_id a save_quote(), el guardado actualiza el registro existente
-    # en vez de crear uno nuevo — incluyendo mover el Excel a la carpeta del
-    # nuevo cliente si se cambió la empresa en el Paso 1.
     st.divider()
     st.markdown("### 💾 Save to Repository")
 
