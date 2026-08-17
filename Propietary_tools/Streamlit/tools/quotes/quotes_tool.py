@@ -457,6 +457,22 @@ def _mime_for_filename(filename: str) -> str:
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+def _client_display_name(client: str) -> str:
+    """Nombre a mostrar para un cliente: usa el 'display_name' configurado en
+    la ficha de empresa (página Clients) si existe; si no, cae de vuelta al
+    nombre completo tal cual está guardado en la quote. Tolerante a fallos
+    (ej. sin conexión a GitHub) — en ese caso devuelve el nombre completo tal
+    cual, para no romper la pantalla."""
+    client = (client or "").strip()
+    if not client:
+        return client
+    try:
+        from tools.clients import clients_repo
+        return clients_repo.get_company_display_name(client)
+    except Exception:
+        return client
+
+
 # Step 1 (Client & Contact) vive en su propio módulo dentro de tools/quotes/,
 # totalmente independiente de tools/clients/. Solo LEE clients_repo — nunca
 # crea clientes/contactos nuevos (por eso ya no se importan
@@ -580,10 +596,30 @@ def _show_history():
     if "quote_file_cache" not in st.session_state:
         st.session_state["quote_file_cache"] = {}
 
+    # Nombres de empresa a mostrar (display_name configurado en Clients si
+    # existe, si no el nombre completo tal cual quedó guardado en la
+    # quote). Se carga una sola vez aquí para no hacer una llamada a
+    # GitHub por cada fila del historial.
+    try:
+        from tools.clients import clients_repo
+        companies_db = clients_repo.load_companies_db()
+    except Exception:
+        companies_db = {}
+
+    def _disp(name: str) -> str:
+        name = (name or "").strip()
+        if not name:
+            return name
+        info = companies_db.get(name, {})
+        return (info.get("display_name") or "").strip() or name
+
     clients = sorted(set(q.get("client", "—") for q in quotes))
     col_f1, col_f2, _ = st.columns([1, 1, 2])
     with col_f1:
-        client_filter = st.selectbox("Filter by client", ["All"] + clients)
+        client_filter = st.selectbox(
+            "Filter by client", ["All"] + clients,
+            format_func=lambda name: _disp(name) if name != "All" else name,
+        )
     with col_f2:
         status_filter = st.selectbox("Filter by status", ["All"] + quotes_repo.STATUS_CHOICES)
 
@@ -625,7 +661,7 @@ def _show_history():
 
     for rec in filtered_sorted:
         c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.45, 1.7, 1.0, 1.35, 1.05, 1.15, 0.85, 1.0, 0.85])
-        c0.write(f"🏢 {rec.get('client', '—')}")
+        c0.write(f"🏢 {_disp(rec.get('client', '—'))}")
         c1.write(rec.get("title", "—") or "—")
         c2.write(rec.get("date", "—"))
         c3.write(f"#{rec.get('quote_number', '—')}  ({rec.get('distributor', '—')})")
@@ -697,9 +733,13 @@ def _show_new_quote():
     from tools.quotes import quotes_repo
 
     loaded_id = st.session_state.get("loaded_record_id")
-    opened_from_history = st.session_state.get("opened_from_history", False)
 
-    if not st.session_state.get("client_step_done") and not loaded_id:
+    # Nota: antes esta condición también exigía "and not loaded_id", lo que
+    # impedía volver al Paso 1 (Client & Contact) para una quote ya cargada
+    # desde el historial. Al quitarlo, el botón "Edit client/contact" en el
+    # bloque de abajo (rama loaded_id) puede reabrir el Paso 1 también para
+    # quotes ya guardadas.
+    if not st.session_state.get("client_step_done"):
         show_client_step()
         return
 
@@ -709,17 +749,24 @@ def _show_new_quote():
         saved_status = (st.session_state.get("quote_saved_record") or {}).get(
             "status", quotes_repo.DEFAULT_STATUS
         )
-        st.info(
-            f"📂 Viewing saved quote: **{st.session_state.get('quote_title', '')}** "
-            f"— {st.session_state.get('quote_client', '')}"
-        )
-        st.html(_status_badge_html(saved_status))
+        summary_col, edit_col = st.columns([5, 1.3])
+        with summary_col:
+            st.info(
+                f"📂 Viewing saved quote: **{st.session_state.get('quote_title', '')}** "
+                f"— {_client_display_name(st.session_state.get('quote_client', '')) or '—'}"
+            )
+            st.html(_status_badge_html(saved_status))
+        with edit_col:
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            if st.button("✏️ Edit client/contact", use_container_width=True, key="edit_loaded_client"):
+                st.session_state["client_step_done"] = False
+                st.rerun()
         st.markdown("")
     else:
         summary_col, edit_col = st.columns([5, 1.3])
         with summary_col:
             st.markdown(
-                f"**🏢 {info.get('client') or '—'}**  ·  👤 {info.get('contact') or '—'}"
+                f"**🏢 {_client_display_name(info.get('client')) or '—'}**  ·  👤 {info.get('contact') or '—'}"
                 f"  ·  ✉️ {info.get('email') or '—'}  ·  📌 {info.get('title') or '—'}"
             )
         with edit_col:
@@ -811,7 +858,7 @@ def _show_new_quote():
 
     with st.expander("More details"):
         info = st.session_state.get("confirmed_client_info", {})
-        st.write(f"**Client:** {info.get('client') or '—'}")
+        st.write(f"**Client:** {_client_display_name(info.get('client')) or '—'}")
         st.write(f"**Contact:** {info.get('contact') or '—'}")
         st.write(f"**Title:** {info.get('contact_title') or '—'}")
         st.write(f"**Mobile:** {info.get('contact_mobile') or '—'}")
@@ -980,61 +1027,76 @@ def _show_new_quote():
         st.html(render_summary_table(summary))
 
     # ── Save to Repository ───────────────────────────────────────────────────────
-    if not opened_from_history:
-        st.divider()
-        st.markdown("### 💾 Save to Repository")
+    # Antes esta sección solo se mostraba "if not opened_from_history", lo
+    # que hacía imposible actualizar (o cambiar el cliente de) una quote ya
+    # guardada. Ahora se muestra siempre; el botón cambia a "Update Quote"
+    # cuando hay una quote cargada (loaded_record_id), y como ya se pasaba
+    # record_id a save_quote(), el guardado actualiza el registro existente
+    # en vez de crear uno nuevo — incluyendo mover el Excel a la carpeta del
+    # nuevo cliente si se cambió la empresa en el Paso 1.
+    st.divider()
+    st.markdown("### 💾 Save to Repository")
 
-        info = st.session_state.get("confirmed_client_info", {})
+    info = st.session_state.get("confirmed_client_info", {})
 
-        client_val         = (st.session_state.get("quote_client") or info.get("client") or "").strip()
-        title_val          = (st.session_state.get("quote_title") or info.get("title") or "").strip()
-        contact_val        = st.session_state.get("quote_contact") or info.get("contact") or ""
-        contact_title_val  = st.session_state.get("quote_contact_title") or info.get("contact_title") or ""
-        contact_mobile_val = st.session_state.get("quote_contact_mobile") or info.get("contact_mobile") or ""
-        email_val          = st.session_state.get("quote_email") or info.get("email") or ""
-        date_val           = st.session_state.get("quote_date_obj") or info.get("date") or datetime.today().date()
+    client_val         = (st.session_state.get("quote_client") or info.get("client") or "").strip()
+    title_val          = (st.session_state.get("quote_title") or info.get("title") or "").strip()
+    contact_val        = st.session_state.get("quote_contact") or info.get("contact") or ""
+    contact_title_val  = st.session_state.get("quote_contact_title") or info.get("contact_title") or ""
+    contact_mobile_val = st.session_state.get("quote_contact_mobile") or info.get("contact_mobile") or ""
+    email_val          = st.session_state.get("quote_email") or info.get("email") or ""
+    date_val           = st.session_state.get("quote_date_obj") or info.get("date") or datetime.today().date()
 
-        can_save = bool(client_val) and bool(title_val)
-        if not can_save:
-            st.warning("Fill in at least **Company** and **Proposal title** to be able to save.")
+    can_save  = bool(client_val) and bool(title_val)
+    is_update = bool(st.session_state.get("loaded_record_id"))
 
-        if st.button("💾 Save Quote", type="primary", disabled=not can_save):
-            with st.spinner("Saving to repository..."):
-                try:
-                    record = quotes_repo.save_quote(
-                        client=client_val,
-                        contact=contact_val,
-                        contact_title=contact_title_val,
-                        contact_mobile=contact_mobile_val,
-                        email=email_val,
-                        title=title_val,
-                        date=date_val.strftime("%d/%m/%Y"),
-                        meta=meta,
-                        items=items,
-                        margin_pct=margin_pct,
-                        distributor=distributor,
-                        file_bytes=st.session_state.get("original_excel_bytes"),
-                        original_filename=st.session_state.get("original_excel_name", ""),
-                        record_id=st.session_state.get("loaded_record_id"),
-                    )
-                except Exception as e:
-                    st.error(f"❌ Error saving to repository: {e}")
-                    record = None
+    if not can_save:
+        st.warning("Fill in at least **Company** and **Proposal title** to be able to save.")
 
-            if record:
-                st.session_state["quote_client"]         = client_val
-                st.session_state["quote_title"]          = title_val
-                st.session_state["quote_contact"]        = contact_val
-                st.session_state["quote_contact_title"]  = contact_title_val
-                st.session_state["quote_contact_mobile"] = contact_mobile_val
-                st.session_state["quote_email"]          = email_val
-                st.session_state["quote_date_obj"]       = date_val
+    save_label = "💾 Update Quote" if is_update else "💾 Save Quote"
 
-                st.session_state["quote_saved_record"] = record
-                st.session_state["loaded_record_id"]   = record["id"]
-                snapshot_client_info()
+    if st.button(save_label, type="primary", disabled=not can_save):
+        with st.spinner("Updating repository..." if is_update else "Saving to repository..."):
+            try:
+                record = quotes_repo.save_quote(
+                    client=client_val,
+                    contact=contact_val,
+                    contact_title=contact_title_val,
+                    contact_mobile=contact_mobile_val,
+                    email=email_val,
+                    title=title_val,
+                    date=date_val.strftime("%d/%m/%Y"),
+                    meta=meta,
+                    items=items,
+                    margin_pct=margin_pct,
+                    distributor=distributor,
+                    file_bytes=st.session_state.get("original_excel_bytes"),
+                    original_filename=st.session_state.get("original_excel_name", ""),
+                    record_id=st.session_state.get("loaded_record_id"),
+                )
+            except Exception as e:
+                st.error(f"❌ Error saving to repository: {e}")
+                record = None
 
-                st.success(f"✅ Quote saved — Quote #{record.get('quote_number', '—')}")
+        if record:
+            st.session_state["quote_client"]         = client_val
+            st.session_state["quote_title"]          = title_val
+            st.session_state["quote_contact"]        = contact_val
+            st.session_state["quote_contact_title"]  = contact_title_val
+            st.session_state["quote_contact_mobile"] = contact_mobile_val
+            st.session_state["quote_email"]          = email_val
+            st.session_state["quote_date_obj"]       = date_val
+
+            st.session_state["quote_saved_record"]  = record
+            st.session_state["loaded_record_id"]    = record["id"]
+            st.session_state["opened_from_history"] = True
+            snapshot_client_info()
+
+            st.success(
+                f"✅ Quote updated — Quote #{record.get('quote_number', '—')}"
+                if is_update else
+                f"✅ Quote saved — Quote #{record.get('quote_number', '—')}"
+            )
 
     # ── Xero (available for new and saved/edited quotes) ───────────────────────
     st.divider()
