@@ -27,11 +27,23 @@ BASE_PATH = "Propietary_tools"
 
 
 # ── Estados posibles de una quote ────────────────────────────────────────────────
+# "Draft" = creada pero todavía no enviada vía Xero. Es el status con el que
+# arranca toda quote nueva (ver save_quote más abajo). El cambio a "Sent" (o
+# a cualquier otro estado) es SIEMPRE manual, desde el desplegable de Status
+# en Quote History — no hay ninguna lógica automática que lo cambie al
+# enviar a Xero, precisamente porque una quote se puede reenviar varias
+# veces.
+STATUS_DRAFT    = "Draft"
 STATUS_SENT     = "Sent"
 STATUS_ACCEPTED = "Accepted"
 STATUS_REJECTED = "Rejected"
 STATUS_EXPIRED  = "Expired"
-STATUS_CHOICES  = [STATUS_SENT, STATUS_ACCEPTED, STATUS_REJECTED, STATUS_EXPIRED]
+STATUS_CHOICES  = [STATUS_DRAFT, STATUS_SENT, STATUS_ACCEPTED, STATUS_REJECTED, STATUS_EXPIRED]
+# DEFAULT_STATUS se mantiene en "Sent": es el valor de compatibilidad para
+# quotes guardadas ANTES de que existiera el campo "status" (ver
+# load_quotes más abajo) — esas quotes son de cuando el único flujo posible
+# era "ya enviada", así que se siguen tratando como "Sent" por defecto. Las
+# quotes NUEVAS usan STATUS_DRAFT explícitamente (ver save_quote).
 DEFAULT_STATUS  = STATUS_SENT
 
 
@@ -161,14 +173,11 @@ def save_quote(
       {BASE_PATH}/Quotes/index.json (usado por el historial/filtros de la app).
     - Si se está actualizando una oferta y el cliente cambió, borra los
       archivos antiguos para no dejar duplicados fuera de su carpeta correcta.
-    - El campo "status" (Sent/Accepted/Rejected/Expired) se preserva si ya
-      existía (edición de una quote guardada), o se pone a "Sent" por
-      defecto si es una quote nueva. Para cambiar el estado explícitamente
-      usa set_quote_status(), no este método.
-
-    NOTA: este módulo no valida ni crea clientes/contactos — solo recibe
-    'client', 'contact', etc. como texto ya validado por quien lo llame
-    (apoyado en tools.clients.clients_repo).
+    - El campo "status" (Draft/Sent/Accepted/Rejected/Expired) se preserva si
+      ya existía (edición de una quote guardada), o se pone a "Draft" por
+      defecto si es una quote nueva (creada pero aún no enviada vía Xero).
+      Para cambiar el estado explícitamente usa set_quote_status(), no este
+      método — el cambio de status es siempre manual.
     """
     is_update = record_id is not None
     rid = record_id or datetime.now().strftime("%Y%m%d%H%M%S")
@@ -198,7 +207,13 @@ def save_quote(
         old_record = next((r for r in index if r.get("id") == rid), None)
         index = [r for r in index if r.get("id") != rid]
 
-    status = (old_record.get("status", DEFAULT_STATUS) if old_record else DEFAULT_STATUS)
+    # Una quote recién creada (sin old_record) arranca en "Draft". Al
+    # actualizar una quote existente se conserva el status que ya tenía; si
+    # por algún motivo una quote antigua no trae status guardado, cae en
+    # DEFAULT_STATUS ("Sent"), igual que antes de añadir "Draft".
+    status = (
+        old_record.get("status", DEFAULT_STATUS) if old_record else STATUS_DRAFT
+    )
 
     record = {
         "id":             rid,
@@ -274,8 +289,8 @@ def delete_quote(record_id: str):
 
 def set_quote_status(record_id: str, status: str):
     """Actualiza únicamente el campo 'status' de una quote en el índice
-    (Sent / Accepted / Rejected / Expired). No toca el Excel ni el detalle
-    completo — solo reescribe index.json con un único commit."""
+    (Draft / Sent / Accepted / Rejected / Expired). No toca el Excel ni el
+    detalle completo — solo reescribe index.json con un único commit."""
     if status not in STATUS_CHOICES:
         raise ValueError(f"Invalid status '{status}'. Must be one of {STATUS_CHOICES}")
 
