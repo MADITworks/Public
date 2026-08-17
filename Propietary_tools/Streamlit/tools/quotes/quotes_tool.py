@@ -603,14 +603,16 @@ def _show_history():
         except (ValueError, TypeError):
             return datetime.min
 
+    # Más recientes primero, independientemente del cliente.
     filtered_sorted = sorted(
         filtered,
-        key=lambda r: (r.get("client", "—").lower(), -_date_key(r).timestamp()),
+        key=lambda r: _date_key(r),
+        reverse=True,
     )
 
     st.caption(f"Showing {len(filtered_sorted)} quote(s)")
 
-    hc0, hc1, hc2, hc3, hc4, hc5, hc6, hc7 = st.columns([1.6, 1.8, 1.0, 1.4, 1.1, 1.2, 0.9, 1.1])
+    hc0, hc1, hc2, hc3, hc4, hc5, hc6, hc7, hc8 = st.columns([1.45, 1.7, 1.0, 1.35, 1.05, 1.15, 0.85, 1.0, 0.85])
     hc0.markdown("**Company**")
     hc1.markdown("**Title**")
     hc2.markdown("**Date**")
@@ -619,9 +621,10 @@ def _show_history():
     hc5.markdown("**Status**")
     hc6.markdown("")
     hc7.markdown("")
+    hc8.markdown("")
 
     for rec in filtered_sorted:
-        c0, c1, c2, c3, c4, c5, c6, c7 = st.columns([1.6, 1.8, 1.0, 1.4, 1.1, 1.2, 0.9, 1.1])
+        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.45, 1.7, 1.0, 1.35, 1.05, 1.15, 0.85, 1.0, 0.85])
         c0.write(f"🏢 {rec.get('client', '—')}")
         c1.write(rec.get("title", "—") or "—")
         c2.write(rec.get("date", "—"))
@@ -674,6 +677,19 @@ def _show_history():
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ Could not download: {e}")
+        with c8:
+            if st.button("🗑️ Delete", key=f"delete_{rec['id']}", use_container_width=True):
+                try:
+                    with st.spinner("Deleting quote..."):
+                        deleted = quotes_repo.delete_quote(rec["id"])
+                    if deleted:
+                        st.session_state["quote_file_cache"].pop(rec["id"], None)
+                        st.success("✅ Quote deleted")
+                        st.rerun()
+                    else:
+                        st.warning("Quote not found")
+                except Exception as e:
+                    st.error(f"❌ Could not delete quote: {e}")
 
 
 # ── New Quote / View Saved Quote ────────────────────────────────────────────────
@@ -963,7 +979,7 @@ def _show_new_quote():
     with col_mid:
         st.html(render_summary_table(summary))
 
-    # ── Save to Repository / Send to Xero ───────────────────────────────────────
+    # ── Save to Repository ───────────────────────────────────────────────────────
     if not opened_from_history:
         st.divider()
         st.markdown("### 💾 Save to Repository")
@@ -1020,51 +1036,51 @@ def _show_new_quote():
 
                 st.success(f"✅ Quote saved — Quote #{record.get('quote_number', '—')}")
 
-        # ── Xero (only available after saving) ──────────────────────────────────
-        st.divider()
-        st.markdown("### 🔗 Send to Xero")
+    # ── Xero (available for new and saved/edited quotes) ───────────────────────
+    st.divider()
+    st.markdown("### 🔗 Send to Xero")
 
-        if not st.session_state.get("quote_saved_record"):
-            st.info("Save the quote to the repository before sending it to Xero.")
+    if not st.session_state.get("quote_saved_record"):
+        st.info("Save the quote to the repository before sending it to Xero.")
+    else:
+        from integrations import xero as xero_integration
+
+        if xero_integration.is_connected():
+            st.success("✅ Xero connected")
+            if st.button("📤 Send to Xero as Draft Quote", type="primary", key="send_to_xero"):
+                with st.spinner("Sending to Xero..."):
+                    try:
+                        result    = xero_integration.create_draft_quote(meta, items, margin_pct)
+                        quote_num = result.get("QuoteNumber", "")
+                        quote_id  = result.get("QuoteID", "")
+                        st.success(f"✅ Draft quote created in Xero! Quote #{quote_num} — ID: {quote_id}")
+                    except Exception as e:
+                        st.error(f"❌ Error sending to Xero: {e}")
+                        if hasattr(e, "response") and e.response is not None:
+                            st.json(e.response.json())
         else:
-            from integrations import xero as xero_integration
-
-            if xero_integration.is_connected():
-                st.success("✅ Xero connected")
-                if st.button("📤 Send to Xero as Draft Quote", type="primary"):
-                    with st.spinner("Sending to Xero..."):
-                        try:
-                            result    = xero_integration.create_draft_quote(meta, items, margin_pct)
-                            quote_num = result.get("QuoteNumber", "")
-                            quote_id  = result.get("QuoteID", "")
-                            st.success(f"✅ Draft quote created in Xero! Quote #{quote_num} — ID: {quote_id}")
-                        except Exception as e:
-                            st.error(f"❌ Error sending to Xero: {e}")
-                            if hasattr(e, "response") and e.response is not None:
-                                st.json(e.response.json())
-            else:
-                try:
-                    auth_url = xero_integration.get_auth_url()
-                    col_connect, col_verify, _ = st.columns([2, 2, 3])
-                    with col_connect:
-                        st.html(
-                            f'<a href="{auth_url}" target="_blank" rel="noopener noreferrer" '
-                            f'style="display:inline-block;background:#1a6fe8;color:#fff;'
-                            f'padding:10px 18px;border-radius:8px;text-decoration:none;'
-                            f'font-size:0.88rem;font-weight:500;">'
-                            f'🔗 Connect to Xero</a>'
-                        )
-                    with col_verify:
-                        if st.button("🔄 I've connected — verify", type="secondary"):
-                            if TOKEN_FILE.exists():
-                                tokens = json.loads(TOKEN_FILE.read_text())
-                                st.session_state["xero_tokens"] = tokens
-                                TOKEN_FILE.unlink()
-                                st.rerun()
-                            else:
-                                st.warning("Token not found yet — wait a few seconds and try again.")
-                except KeyError:
-                    st.warning("⚠️ Xero credentials not configured. Add `[xero]` to your Streamlit secrets.")
+            try:
+                auth_url = xero_integration.get_auth_url()
+                col_connect, col_verify, _ = st.columns([2, 2, 3])
+                with col_connect:
+                    st.html(
+                        f'<a href="{auth_url}" target="_blank" rel="noopener noreferrer" '
+                        f'style="display:inline-block;background:#1a6fe8;color:#fff;'
+                        f'padding:10px 18px;border-radius:8px;text-decoration:none;'
+                        f'font-size:0.88rem;font-weight:500;">'
+                        f'🔗 Connect to Xero</a>'
+                    )
+                with col_verify:
+                    if st.button("🔄 I've connected — verify", type="secondary"):
+                        if TOKEN_FILE.exists():
+                            tokens = json.loads(TOKEN_FILE.read_text())
+                            st.session_state["xero_tokens"] = tokens
+                            TOKEN_FILE.unlink()
+                            st.rerun()
+                        else:
+                            st.warning("Token not found yet — wait a few seconds and try again.")
+            except KeyError:
+                st.warning("⚠️ Xero credentials not configured. Add `[xero]` to your Streamlit secrets.")
 
 
 # ── Main page ──────────────────────────────────────────────────────────────────
