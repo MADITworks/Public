@@ -431,8 +431,9 @@ def render_summary_table(summary: pd.DataFrame) -> str:
     return styles + f'<table class="summary-table">{header}<tbody>{rows_html}</tbody></table>'
 
 
-# ── Status badge helper (Sent / Accepted / Rejected / Expired) ─────────────────
+# ── Status badge helper (Draft / Sent / Accepted / Rejected / Expired) ─────────
 STATUS_BADGE_COLORS = {
+    "Draft":    "#6c6f73",
     "Sent":     "#5a6b7a",
     "Accepted": "#2d6a4f",
     "Rejected": "#a4353a",
