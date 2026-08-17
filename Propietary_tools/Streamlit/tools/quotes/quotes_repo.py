@@ -244,6 +244,34 @@ def save_quote(
 
 
 # ── Cambiar solo el estado de una quote ya guardada ─────────────────────────────
+def delete_quote(record_id: str):
+    """Elimina una quote del índice y borra sus archivos asociados (Excel + detalle).
+
+    Es tolerante con quotes antiguas: usa excel_path/detail_path cuando existen y
+    mantiene compatibilidad con las rutas planas antiguas.
+    """
+    index, sha = _get_index()
+    record = next((r for r in index if r.get("id") == record_id), None)
+    if record is None:
+        return False
+
+    excel_path = record.get("excel_path")
+    if not excel_path and record.get("filename"):
+        # Legacy flat path
+        excel_path = f"{BASE_PATH}/Quotes/{record['filename']}"
+
+    detail_path = record.get("detail_path") or f"{BASE_PATH}/Quotes/data/{record_id}.json"
+
+    if excel_path:
+        _delete_file(excel_path, f"Delete quote Excel {record_id}")
+    if detail_path:
+        _delete_file(detail_path, f"Delete quote detail {record_id}")
+
+    new_index = [r for r in index if r.get("id") != record_id]
+    _save_index(new_index, sha, f"Delete quote {record_id}")
+    return True
+
+
 def set_quote_status(record_id: str, status: str):
     """Actualiza únicamente el campo 'status' de una quote en el índice
     (Sent / Accepted / Rejected / Expired). No toca el Excel ni el detalle
