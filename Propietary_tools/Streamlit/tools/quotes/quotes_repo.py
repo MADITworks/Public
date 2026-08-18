@@ -47,6 +47,15 @@ STATUS_CHOICES  = [STATUS_DRAFT, STATUS_SENT, STATUS_ACCEPTED, STATUS_REJECTED, 
 DEFAULT_STATUS  = STATUS_SENT
 
 
+# ── Distributor "especial" para quotes manuales de MADIT ───────────────────────
+# No es un distribuidor real — es el valor que se guarda en el campo
+# "distributor" cuando la oferta la ha hecho MADIT directamente (sin parsear
+# un Excel de NEXTGEN/TECHDATA). En ese caso el archivo adjunto (si lo hay)
+# puede ser cualquier tipo (ppt, pdf, docx, xlsx...) y el cost/sell total se
+# introduce a mano en vez de calcularse a partir de line items + margin_pct.
+DISTRIBUTOR_MADIT = "MADIT"
+
+
 # ── Organización por cliente ─────────────────────────────────────────────────────
 def _client_folder(client: str) -> str:
     """Sanitiza el nombre del cliente para usarlo como carpeta en GitHub
@@ -58,10 +67,12 @@ def _client_folder(client: str) -> str:
     return name or "Unknown"
 
 
-def _quote_paths(client: str, filename: str, record_id: str) -> tuple[str, str]:
-    """Devuelve (excel_path, detail_path) dentro de la carpeta del cliente."""
+def _quote_paths(client: str, filename: str, record_id: str) -> tuple[str | None, str]:
+    """Devuelve (excel_path, detail_path) dentro de la carpeta del cliente.
+    Si filename está vacío (quote manual de MADIT sin archivo adjunto),
+    excel_path es None — no hay nada que subir/descargar."""
     folder      = _client_folder(client)
-    excel_path  = f"{BASE_PATH}/Quotes/{folder}/{filename}"
+    excel_path  = f"{BASE_PATH}/Quotes/{folder}/{filename}" if filename else None
     detail_path = f"{BASE_PATH}/Quotes/{folder}/data/{record_id}.json"
     return excel_path, detail_path
 
@@ -92,9 +103,10 @@ def _save_index(data: list, sha: str | None, message: str):
     r.raise_for_status()
 
 
-# ── Guardar el Excel original ──────────────────────────────────────────────────
+# ── Guardar el archivo original (Excel de distribuidor, o cualquier fichero
+# adjunto en una quote manual de MADIT: ppt, pdf, docx, xlsx...) ──────────────
 def _upload_excel(path: str, file_bytes: bytes):
-    """Sube el archivo original (xlsx o xls) tal cual, a la ruta ya organizada
+    """Sube el archivo original tal cual, a la ruta ya organizada
     por cliente, para poder reabrirlo/descargarlo después."""
     url     = f"{_repo_base()}/contents/{path}"
     content = base64.b64encode(file_bytes).decode()
@@ -160,19 +172,29 @@ def save_quote(
     record_id:          str | None = None,
     contact_title:      str = "",
     contact_mobile:     str = "",
+    manual_cost_total:  float | None = None,
+    manual_sell_total:  float | None = None,
 ) -> dict:
     """
     Guarda (o actualiza, si se pasa record_id) la oferta en
     {BASE_PATH}/Quotes/{Cliente}/ dentro del repo privado:
-    - Sube el Excel original manteniendo su extensión (.xlsx / .xls), con el
-      nombre prefijado por fecha (AAAAMMDD) para que queden ordenados
-      cronológicamente dentro de la carpeta del cliente.
+    - Sube el archivo original (si se pasa file_bytes), con el nombre
+      prefijado por fecha (AAAAMMDD) para distributor quotes normales
+      (NEXTGEN/TECHDATA), o con su nombre original tal cual cuando
+      distributor == DISTRIBUTOR_MADIT (quote manual — el archivo, si lo
+      hay, puede ser ppt/pdf/docx/xlsx/lo que sea).
     - Guarda el detalle completo (meta + items editados) en
       {BASE_PATH}/Quotes/{Cliente}/data/{id}.json
     - Añade / actualiza la entrada en el índice global
       {BASE_PATH}/Quotes/index.json (usado por el historial/filtros de la app).
-    - Si se está actualizando una oferta y el cliente cambió, borra los
-      archivos antiguos para no dejar duplicados fuera de su carpeta correcta.
+    - Si se está actualizando una oferta y el cliente cambió (o se sube un
+      archivo nuevo con distinto nombre), borra los archivos antiguos para
+      no dejar duplicados fuera de su carpeta/nombre correcto.
+    - Para distributor == DISTRIBUTOR_MADIT, cost_total/sell_total se toman
+      directamente de manual_cost_total/manual_sell_total (no se calculan a
+      partir de items/margin_pct), y el archivo adjunto es opcional: una
+      quote manual puede guardarse sin ningún archivo, solo con los datos
+      introducidos a mano.
     - El campo "status" (Draft/Sent/Accepted/Rejected/Expired) se preserva si
       ya existía (edición de una quote guardada), o se pone a "Draft" por
       defecto si es una quote nueva (creada pero aún no enviada vía Xero).
@@ -187,25 +209,45 @@ def save_quote(
     except ValueError:
         date_prefix = date.replace("/", "")
 
-    quote_num = meta.get("quote_number", "NOQUOTE")
-    ext       = pathlib.Path(original_filename).suffix.lower() or ".xlsx"
-    if ext not in (".xlsx", ".xls"):
-        ext = ".xlsx"
-    filename = f"{date_prefix}_{quote_num}{ext}"
-
-    excel_path, detail_path = _quote_paths(client, filename, rid)
-
-    if file_bytes:
-        _upload_excel(excel_path, file_bytes)
-
-    cost_total = round(float(items["Total Cost"].sum()), 2)
-    sell_total = round(float(cost_total / (1 - margin_pct / 100)), 2)
-
+    # Se necesita el registro anterior (si es una edición) antes de calcular
+    # el filename: para quotes MADIT sin archivo nuevo, hay que conservar el
+    # archivo (o la ausencia de archivo) que ya tenía.
     index, sha = _get_index()
     old_record = None
     if is_update:
         old_record = next((r for r in index if r.get("id") == rid), None)
         index = [r for r in index if r.get("id") != rid]
+
+    if distributor == DISTRIBUTOR_MADIT:
+        if file_bytes and original_filename:
+            # Archivo nuevo subido — se conserva su nombre original tal cual,
+            # sin prefijo de fecha/número.
+            filename = original_filename
+        elif not file_bytes and old_record:
+            # Edición de una quote manual sin tocar el archivo — se conserva
+            # el que ya tenía (o sigue sin archivo si nunca lo tuvo).
+            filename = old_record.get("filename", "")
+        else:
+            # Quote manual sin ningún archivo adjunto — solo datos a mano.
+            filename = ""
+    else:
+        quote_num = meta.get("quote_number", "NOQUOTE")
+        ext       = pathlib.Path(original_filename).suffix.lower() or ".xlsx"
+        if ext not in (".xlsx", ".xls"):
+            ext = ".xlsx"
+        filename = f"{date_prefix}_{quote_num}{ext}"
+
+    excel_path, detail_path = _quote_paths(client, filename, rid)
+
+    if file_bytes and excel_path:
+        _upload_excel(excel_path, file_bytes)
+
+    if manual_cost_total is not None and manual_sell_total is not None:
+        cost_total = round(float(manual_cost_total), 2)
+        sell_total = round(float(manual_sell_total), 2)
+    else:
+        cost_total = round(float(items["Total Cost"].sum()), 2)
+        sell_total = round(float(cost_total / (1 - margin_pct / 100)), 2)
 
     # Una quote recién creada (sin old_record) arranca en "Draft". Al
     # actualizar una quote existente se conserva el status que ya tenía; si
@@ -238,12 +280,18 @@ def save_quote(
     }
 
     index.append(record)
-    _save_index(index, sha, f"{'Update' if is_update else 'Add'} quote {quote_num} for {client}")
+    _save_index(index, sha, f"{'Update' if is_update else 'Add'} quote {record['quote_number']} for {client}")
+
+    items_records = (
+        items.to_dict(orient="records")
+        if items is not None and hasattr(items, "empty") and not items.empty
+        else []
+    )
 
     detail = {
         **record,
         "meta":  meta,
-        "items": items.to_dict(orient="records"),
+        "items": items_records,
     }
     _save_detail(detail_path, detail, f"{'Update' if is_update else 'Add'} quote detail {rid}")
 
@@ -251,7 +299,7 @@ def save_quote(
         old_excel  = old_record.get("excel_path")  or (f"{BASE_PATH}/Quotes/{old_record['filename']}" if old_record.get("filename") else None)
         old_detail = old_record.get("detail_path") or f"{BASE_PATH}/Quotes/data/{rid}.json"
         if old_excel and old_excel != excel_path:
-            _delete_file(old_excel, f"Remove old file after client change for quote {rid}")
+            _delete_file(old_excel, f"Remove old file after client/file change for quote {rid}")
         if old_detail and old_detail != detail_path:
             _delete_file(old_detail, f"Remove old detail after client change for quote {rid}")
 
@@ -260,11 +308,11 @@ def save_quote(
 
 # ── Cambiar solo el estado de una quote ya guardada ─────────────────────────────
 def delete_quote(record_id: str):
-    """Elimina una quote del índice y borra sus archivos asociados (Excel + detalle).
+    """Elimina una quote del índice y borra sus archivos asociados (archivo + detalle).
 
     Es tolerante con quotes antiguas: usa excel_path/detail_path cuando existen y
-    mantiene compatibilidad con las rutas planas antiguas.
-    """
+    mantiene compatibilidad con las rutas planas antiguas. También es tolerante
+    con quotes manuales de MADIT sin archivo (excel_path=None)."""
     index, sha = _get_index()
     record = next((r for r in index if r.get("id") == record_id), None)
     if record is None:
@@ -278,7 +326,7 @@ def delete_quote(record_id: str):
     detail_path = record.get("detail_path") or f"{BASE_PATH}/Quotes/data/{record_id}.json"
 
     if excel_path:
-        _delete_file(excel_path, f"Delete quote Excel {record_id}")
+        _delete_file(excel_path, f"Delete quote file {record_id}")
     if detail_path:
         _delete_file(detail_path, f"Delete quote detail {record_id}")
 
@@ -289,7 +337,7 @@ def delete_quote(record_id: str):
 
 def set_quote_status(record_id: str, status: str):
     """Actualiza únicamente el campo 'status' de una quote en el índice
-    (Draft / Sent / Accepted / Rejected / Expired). No toca el Excel ni el
+    (Draft / Sent / Accepted / Rejected / Expired). No toca el archivo ni el
     detalle completo — solo reescribe index.json con un único commit."""
     if status not in STATUS_CHOICES:
         raise ValueError(f"Invalid status '{status}'. Must be one of {STATUS_CHOICES}")
@@ -314,13 +362,16 @@ def load_quotes() -> list:
     return index
 
 
-# ── Descargar Excel de una quote ───────────────────────────────────────────────
+# ── Descargar el archivo original de una quote ─────────────────────────────────
 def download_quote_excel(record: dict) -> bytes:
-    """Descarga el Excel original de una quote guardada. Acepta el registro
-    (dict) tal como viene del índice, historial o detalle. Usa 'excel_path'
-    si existe (formato nuevo, organizado por cliente); si no, cae de vuelta
-    a la ruta plana antigua (compatibilidad con quotes guardadas antes de
-    este cambio)."""
+    """Descarga el archivo original de una quote guardada (Excel de
+    distribuidor, o el archivo adjunto de una quote manual de MADIT si lo
+    tiene). Acepta el registro (dict) tal como viene del índice, historial o
+    detalle. Usa 'excel_path' si existe (formato nuevo, organizado por
+    cliente); si no, cae de vuelta a la ruta plana antigua (compatibilidad
+    con quotes guardadas antes de este cambio). Llamarla en una quote sin
+    archivo (excel_path=None y sin filename) es responsabilidad del caller —
+    la UI debe comprobar antes si hay archivo (ver campo 'filename')."""
     path = record.get("excel_path") or f"{BASE_PATH}/Quotes/{record.get('filename', '')}"
     url  = f"{_repo_base()}/contents/{path}"
     r    = requests.get(url, headers=_headers())
