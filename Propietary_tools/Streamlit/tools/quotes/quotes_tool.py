@@ -527,6 +527,8 @@ NEW_QUOTE_STATE_KEYS = [
     "manual_cost_total", "manual_sell_total", "manual_quote_number",
     "manual_currency", "manual_notes",
     "manual_offer_date_obj", "manual_expiry_date_obj",
+    # Copy-from-history flow
+    "copied_quote_pending",
 ]
 
 
@@ -638,8 +640,16 @@ def _copy_saved_quote(record: dict):
     st.session_state["quote_saved_record"]   = None
     st.session_state["opened_from_history"]  = False
     st.session_state["original_excel_bytes"] = None
+    st.session_state["original_excel_name"]  = ""
     st.session_state["quote_title"]          = f"{st.session_state.get('quote_title', '')} (Copy)".strip()
     st.session_state["quote_date_obj"]       = datetime.today().date()
+
+    # Sin esta bandera, _show_distributor_quote entraría en la rama de
+    # "sube un Excel nuevo" al no tener loaded_record_id, y de paso
+    # borraría los items_saved que acabamos de cargar. Con la bandera,
+    # los items copiados se muestran directamente, editables, sin pedir
+    # ningún archivo.
+    st.session_state["copied_quote_pending"] = True
 
     # Vuelve al Paso 1 para poder revisar/editar título y cliente antes de
     # seguir — igual que si fuera una quote nueva.
@@ -1082,7 +1092,10 @@ def _show_manual_quote(loaded_id):
 def _show_distributor_quote(loaded_id):
     from tools.quotes import quotes_repo
 
-    # ── Step 2: upload distributor quote (skipped if loaded from repo) ───────
+    is_copy = st.session_state.get("copied_quote_pending", False)
+
+    # ── Step 2: upload distributor quote (skipped if loaded from repo, or
+    # if this is a copy that already carries its own items in session) ──────
     if loaded_id:
         cap_col, dl_col = st.columns([4, 1])
         with cap_col:
@@ -1099,6 +1112,12 @@ def _show_distributor_quote(loaded_id):
                     key="dl_loaded_original",
                     use_container_width=True,
                 )
+    elif is_copy:
+        st.info(
+            "📄 Copied from a previous quote — items below are ready to edit. "
+            "No file is attached to this copy (the original file stays with "
+            "the quote it was copied from)."
+        )
     else:
         uploaded = st.file_uploader(
             "Upload distributor quote (.xlsx or .xls)",
@@ -1389,6 +1408,7 @@ def _show_distributor_quote(loaded_id):
             st.session_state["quote_saved_record"]  = record
             st.session_state["loaded_record_id"]    = record["id"]
             st.session_state["opened_from_history"] = True
+            st.session_state.pop("copied_quote_pending", None)
             snapshot_client_info()
 
             st.success(
