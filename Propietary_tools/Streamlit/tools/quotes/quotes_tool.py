@@ -623,6 +623,38 @@ def _load_saved_quote(record: dict):
     })
 
 
+def _copy_saved_quote(record: dict):
+    """Carga una quote guardada igual que _load_saved_quote (mismo cliente,
+    contacto, items, meta...) pero la 'desconecta' del registro original:
+    borra loaded_record_id / quote_saved_record para que, al pulsar Save,
+    se cree una quote NUEVA en vez de sobrescribir la original. No copia el
+    archivo adjunto (el usuario puede volver a subirlo si aplica), resetea
+    la fecha a hoy y manda al usuario al Paso 1 (Client & Contact) para que
+    pueda ajustar el título -u otros datos- antes de continuar, igual que
+    en una quote nueva normal."""
+    _load_saved_quote(record)
+
+    st.session_state["loaded_record_id"]     = None
+    st.session_state["quote_saved_record"]   = None
+    st.session_state["opened_from_history"]  = False
+    st.session_state["original_excel_bytes"] = None
+    st.session_state["quote_title"]          = f"{st.session_state.get('quote_title', '')} (Copy)".strip()
+    st.session_state["quote_date_obj"]       = datetime.today().date()
+
+    # Vuelve al Paso 1 para poder revisar/editar título y cliente antes de
+    # seguir — igual que si fuera una quote nueva.
+    st.session_state["client_step_done"] = False
+    st.session_state["confirmed_client_info"] = {
+        "client":         st.session_state.get("quote_client", ""),
+        "contact":        st.session_state.get("quote_contact", ""),
+        "contact_title":  st.session_state.get("quote_contact_title", ""),
+        "contact_mobile": st.session_state.get("quote_contact_mobile", ""),
+        "email":          st.session_state.get("quote_email", ""),
+        "title":          st.session_state.get("quote_title", ""),
+        "date":           st.session_state.get("quote_date_obj"),
+    }
+
+
 # ── Quote History ───────────────────────────────────────────────────────────────
 def _show_history():
     from tools.quotes import quotes_repo
@@ -695,8 +727,8 @@ def _show_history():
 
     st.caption(f"Showing {len(filtered_sorted)} quote(s)")
 
-    hc0, hc1, hc2, hc2_exp, hc3, hc4, hc5, hc6, hc7, hc8 = st.columns(
-        [1.4, 1.5, 0.95, 0.95, 1.25, 1.0, 1.1, 0.8, 0.95, 0.8]
+    hc0, hc1, hc2, hc2_exp, hc3, hc4, hc5, hc6, hc6b, hc7, hc8 = st.columns(
+        [1.3, 1.4, 0.9, 0.9, 1.15, 0.95, 1.0, 0.75, 0.8, 0.9, 0.75]
     )
     hc0.markdown("**Company**")
     hc1.markdown("**Title**")
@@ -706,12 +738,13 @@ def _show_history():
     hc4.markdown("**Total (Sell)**")
     hc5.markdown("**Status**")
     hc6.markdown("")
+    hc6b.markdown("")
     hc7.markdown("")
     hc8.markdown("")
 
     for rec in filtered_sorted:
-        c0, c1, c2, c2_exp, c3, c4, c5, c6, c7, c8 = st.columns(
-            [1.4, 1.5, 0.95, 0.95, 1.25, 1.0, 1.1, 0.8, 0.95, 0.8]
+        c0, c1, c2, c2_exp, c3, c4, c5, c6, c6b, c7, c8 = st.columns(
+            [1.3, 1.4, 0.9, 0.9, 1.15, 0.95, 1.0, 0.75, 0.8, 0.9, 0.75]
         )
         c0.write(f"🏢 {_disp(rec.get('client', '—'))}")
         c1.write(rec.get("title", "—") or "—")
@@ -741,6 +774,11 @@ def _show_history():
         with c6:
             if st.button("Open", key=f"open_{rec['id']}", use_container_width=True):
                 _load_saved_quote(rec)
+                st.session_state["quote_view"] = "new"
+                st.rerun()
+        with c6b:
+            if st.button("📄 Copy", key=f"copy_{rec['id']}", use_container_width=True):
+                _copy_saved_quote(rec)
                 st.session_state["quote_view"] = "new"
                 st.rerun()
         with c7:
