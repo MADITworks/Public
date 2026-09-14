@@ -6,9 +6,10 @@ import io
 import re
 import json
 import pathlib
+import mimetypes
 import html as _html
 import xlrd
-from datetime import datetime, timedelta
+from datetime import datetime
 
 
 TOKEN_FILE = pathlib.Path("/tmp/xero_tokens.json")
@@ -129,27 +130,6 @@ def extract_amount(val: str) -> float:
     return 0.0
 
 
-def _excel_serial_to_date(value) -> str:
-    """Convierte un serial de fecha de Excel (los que devuelve nuestro lector
-    manual de XLSX para celdas de tipo fecha, ej. '46375', porque read_xlsx_native
-    no aplica el number_format de la celda) a texto dd/mm/yyyy. Si el valor
-    viene vacío o no es un número, se devuelve tal cual (por si ya llegara
-    como texto de fecha desde otra fuente), y si viene vacío devuelve "" para
-    que el llamador pueda decidir no mostrarlo."""
-    raw = str(value).strip() if value is not None else ""
-    if not raw:
-        return ""
-    try:
-        serial = float(raw)
-    except (ValueError, TypeError):
-        return raw
-    try:
-        date = datetime(1899, 12, 30) + timedelta(days=serial)
-        return date.strftime("%d/%m/%Y")
-    except (OverflowError, ValueError, OSError):
-        return raw
-
-
 # ── Auto-detect distributor ────────────────────────────────────────────────────
 def detect_distributor(sheets: dict) -> str:
     all_text = ""
@@ -190,20 +170,6 @@ def parse_nextgen(sheets: dict) -> tuple[dict, pd.DataFrame]:
             continue
         sku         = str(row[1]).strip()
         description = str(row[2]).replace("_x000a_", " ").strip()
-
-        # Columnas D y E de la plantilla NEXTGEN = fecha de inicio y fin de
-        # cobertura del contrato para ESTA línea (renewal). Antes se leía la
-        # fila completa pero estas dos columnas nunca se usaban — se
-        # perdían. Ahora se añaden al final de la descripción, línea a
-        # línea, en formato dd/mm/yyyy (llegan como serial de Excel porque
-        # nuestro lector manual de XLSX no aplica el formato de celda).
-        start_str = _excel_serial_to_date(row[3]) if len(row) > 3 else ""
-        end_str   = _excel_serial_to_date(row[4]) if len(row) > 4 else ""
-        if start_str and end_str:
-            description = f"{description} (Coverage: {start_str} - {end_str})"
-        elif start_str or end_str:
-            description = f"{description} (Coverage: {start_str or '—'} - {end_str or '—'})"
-
         try:
             qty        = int(float(str(row[5])))
             unit_price = float(str(row[6]))
@@ -486,11 +452,19 @@ def _status_badge_html(status: str) -> str:
 
 # ── Misc helpers ────────────────────────────────────────────────────────────────
 def _mime_for_filename(filename: str) -> str:
-    """Devuelve el mime type correcto según la extensión real del archivo
-    (para que los botones de descarga sirvan tanto .xlsx como .xls)."""
-    if filename.lower().endswith(".xls") and not filename.lower().endswith(".xlsx"):
+    """Devuelve el mime type correcto según la extensión real del archivo,
+    para que los botones de descarga sirvan tanto para el Excel de un
+    distribuidor (.xlsx / .xls) como para cualquier archivo adjunto en una
+    quote manual de MADIT (ppt, pdf, docx, imagen, lo que sea)."""
+    if not filename:
+        return "application/octet-stream"
+    lower = filename.lower()
+    if lower.endswith(".xls") and not lower.endswith(".xlsx"):
         return "application/vnd.ms-excel"
-    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if lower.endswith(".xlsx"):
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or "application/octet-stream"
 
 
 def _client_display_name(client: str) -> str:
@@ -548,6 +522,11 @@ NEW_QUOTE_STATE_KEYS = [
     "edit_counter", "items_snapshot", "quote_saved_record", "loaded_record_id",
     "original_excel_bytes", "original_excel_name",
     "client_step_done", "confirmed_client_info", "opened_from_history",
+    # Manual / MADIT quote flow
+    "quote_mode", "quote_mode_radio", "manual_file_upload",
+    "manual_cost_total", "manual_sell_total", "manual_quote_number",
+    "manual_currency", "manual_notes",
+    "manual_offer_date_obj", "manual_expiry_date_obj",
 ]
 
 
@@ -563,31 +542,63 @@ def _reset_new_quote_flow():
     st.session_state["quote_date_obj"]       = datetime.today().date()
     st.session_state["margin_pct"]           = 10.0
     st.session_state["client_step_done"]     = False
+    st.session_state["quote_mode"]           = "distributor"
 
 
 def _load_saved_quote(record: dict):
     from tools.quotes import quotes_repo
 
     with st.spinner("Loading saved quote..."):
-        detail      = quotes_repo.load_quote_detail(record)
-        excel_bytes = quotes_repo.download_quote_excel(detail)
+        detail   = quotes_repo.load_quote_detail(record)
+        has_file = bool(detail.get("excel_path") or detail.get("filename"))
+        excel_bytes = quotes_repo.download_quote_excel(detail) if has_file else None
 
     for key in CLIENT_FORM_WIDGET_KEYS:
         st.session_state.pop(key, None)
-
-    items = pd.DataFrame(detail["items"])
 
     try:
         date_obj = datetime.strptime(detail["date"], "%d/%m/%Y").date()
     except (ValueError, TypeError):
         date_obj = datetime.today().date()
 
-    st.session_state["items_saved"]          = items
-    st.session_state["meta"]                 = detail["meta"]
-    st.session_state["distributor"]          = detail["distributor"]
-    st.session_state["margin_pct"]           = detail.get("margin_pct", 10.0)
-    st.session_state["edit_mode"]            = False
-    st.session_state["edit_counter"]         = 0
+    is_manual = detail.get("distributor") == quotes_repo.DISTRIBUTOR_MADIT
+    st.session_state["quote_mode"] = "manual" if is_manual else "distributor"
+
+    meta = detail.get("meta", {})
+
+    if is_manual:
+        # Quote manual de MADIT: no hay line items reales que parsear —
+        # se recargan los campos a mano (cost/sell/dates/notes).
+        st.session_state["items_saved"]  = pd.DataFrame(detail.get("items", []))
+        st.session_state["meta"]         = meta
+        st.session_state["distributor"]  = detail["distributor"]
+        st.session_state["margin_pct"]   = detail.get("margin_pct", 0.0)
+        st.session_state["edit_mode"]    = False
+        st.session_state["edit_counter"] = 0
+
+        st.session_state["manual_cost_total"] = float(detail.get("cost_total", 0.0) or 0.0)
+        st.session_state["manual_sell_total"] = float(detail.get("sell_total", 0.0) or 0.0)
+        quote_number = detail.get("quote_number", "")
+        st.session_state["manual_quote_number"] = "" if quote_number in (None, "—") else quote_number
+        st.session_state["manual_currency"] = meta.get("currency", "AUD")
+        st.session_state["manual_notes"]    = meta.get("notes", "")
+        st.session_state["manual_offer_date_obj"] = date_obj
+
+        expiry_str = detail.get("expiry", "")
+        try:
+            st.session_state["manual_expiry_date_obj"] = datetime.strptime(expiry_str, "%d/%m/%Y").date()
+        except (ValueError, TypeError):
+            st.session_state["manual_expiry_date_obj"] = date_obj
+    else:
+        items = pd.DataFrame(detail["items"])
+
+        st.session_state["items_saved"]  = items
+        st.session_state["meta"]         = detail["meta"]
+        st.session_state["distributor"]  = detail["distributor"]
+        st.session_state["margin_pct"]   = detail.get("margin_pct", 10.0)
+        st.session_state["edit_mode"]    = False
+        st.session_state["edit_counter"] = 0
+
     st.session_state["quote_client"]         = detail.get("client", "")
     st.session_state["quote_contact"]        = detail.get("contact", "")
     st.session_state["quote_contact_title"]  = detail.get("contact_title", "")
@@ -597,7 +608,7 @@ def _load_saved_quote(record: dict):
     st.session_state["quote_date_obj"]       = date_obj
     st.session_state["loaded_record_id"]     = detail["id"]
     st.session_state["original_excel_bytes"] = excel_bytes
-    st.session_state["original_excel_name"]  = detail["filename"]
+    st.session_state["original_excel_name"]  = detail.get("filename", "") if has_file else ""
     st.session_state["quote_saved_record"]   = record
     st.session_state["opened_from_history"]  = True
 
@@ -649,22 +660,19 @@ def _show_history():
         info = companies_db.get(name, {})
         return (info.get("display_name") or "").strip() or name
 
-    # Se agrupa por nombre MOSTRADO (display_name), no por el texto crudo
-    # guardado en cada quote — así, si dos quotes tienen un "client" con
-    # texto ligeramente distinto (empresa renombrada en Clients después de
-    # guardar la quote, espacios, etc.) pero ambos resuelven al mismo
-    # nombre visible, aparecen como UNA sola opción en el filtro en vez de
-    # como duplicados idénticos.
-    client_display_names = sorted(set(_disp(q.get("client", "—")) for q in quotes))
+    clients = sorted(set(q.get("client", "—") for q in quotes))
     col_f1, col_f2, _ = st.columns([1, 1, 2])
     with col_f1:
-        client_filter = st.selectbox("Filter by client", ["All"] + client_display_names)
+        client_filter = st.selectbox(
+            "Filter by client", ["All"] + clients,
+            format_func=lambda name: _disp(name) if name != "All" else name,
+        )
     with col_f2:
         status_filter = st.selectbox("Filter by status", ["All"] + quotes_repo.STATUS_CHOICES)
 
     filtered = quotes
     if client_filter != "All":
-        filtered = [q for q in filtered if _disp(q.get("client", "—")) == client_filter]
+        filtered = [q for q in filtered if q.get("client") == client_filter]
     if status_filter != "All":
         filtered = [q for q in filtered if q.get("status", quotes_repo.DEFAULT_STATUS) == status_filter]
 
@@ -687,10 +695,13 @@ def _show_history():
 
     st.caption(f"Showing {len(filtered_sorted)} quote(s)")
 
-    hc0, hc1, hc2, hc3, hc4, hc5, hc6, hc7, hc8 = st.columns([1.45, 1.7, 1.0, 1.35, 1.05, 1.15, 0.85, 1.0, 0.85])
+    hc0, hc1, hc2, hc2_exp, hc3, hc4, hc5, hc6, hc7, hc8 = st.columns(
+        [1.4, 1.5, 0.95, 0.95, 1.25, 1.0, 1.1, 0.8, 0.95, 0.8]
+    )
     hc0.markdown("**Company**")
     hc1.markdown("**Title**")
     hc2.markdown("**Date**")
+    hc2_exp.markdown("**Expiry Date**")
     hc3.markdown("**Quote #**")
     hc4.markdown("**Total (Sell)**")
     hc5.markdown("**Status**")
@@ -699,10 +710,13 @@ def _show_history():
     hc8.markdown("")
 
     for rec in filtered_sorted:
-        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([1.45, 1.7, 1.0, 1.35, 1.05, 1.15, 0.85, 1.0, 0.85])
+        c0, c1, c2, c2_exp, c3, c4, c5, c6, c7, c8 = st.columns(
+            [1.4, 1.5, 0.95, 0.95, 1.25, 1.0, 1.1, 0.8, 0.95, 0.8]
+        )
         c0.write(f"🏢 {_disp(rec.get('client', '—'))}")
         c1.write(rec.get("title", "—") or "—")
         c2.write(rec.get("date", "—"))
+        c2_exp.write(rec.get("expiry", "—") or "—")
         c3.write(f"#{rec.get('quote_number', '—')}  ({rec.get('distributor', '—')})")
         c4.write(fmt(rec.get("sell_total", 0)))
 
@@ -814,6 +828,221 @@ def _show_new_quote():
                 st.rerun()
 
     st.divider()
+
+    # ── Quote type selector ──────────────────────────────────────────────────
+    # Solo se puede elegir el tipo al crear una quote NUEVA. Una quote ya
+    # guardada mantiene el tipo con el que se guardó (fijado en
+    # _load_saved_quote a partir de detail["distributor"]) — no tiene
+    # sentido dejar cambiarlo a mitad de edición.
+    if not loaded_id:
+        st.session_state.setdefault("quote_mode", "distributor")
+        mode_choice = st.radio(
+            "Quote type",
+            ["📦 Distributor Quote", "✍️ Manual / MADIT Quote"],
+            index=0 if st.session_state["quote_mode"] == "distributor" else 1,
+            horizontal=True,
+            key="quote_mode_radio",
+        )
+        st.session_state["quote_mode"] = (
+            "distributor" if mode_choice.startswith("📦") else "manual"
+        )
+        st.divider()
+
+    if st.session_state.get("quote_mode") == "manual":
+        _show_manual_quote(loaded_id)
+    else:
+        _show_distributor_quote(loaded_id)
+
+
+def _show_manual_quote(loaded_id):
+    """Flujo para una quote hecha directamente por MADIT (sin Excel de
+    distribuidor que parsear). El archivo adjunto es opcional y puede ser
+    de cualquier tipo (ppt, pdf, docx, xlsx, imagen...); cost/sell/dates se
+    introducen a mano. No tiene sección de Xero."""
+    from tools.quotes import quotes_repo
+
+    st.html(
+        '<span style="background:#8a5cb8;color:#fff;padding:3px 10px;'
+        'border-radius:12px;font-size:0.75rem;font-weight:600;">'
+        '🏷 MADIT — Manual Quote</span>'
+    )
+    st.markdown("")
+    st.caption(
+        "Use this when the offer was put together by MADIT directly, with no "
+        "distributor Excel to parse. Attach a supporting file if you have one "
+        "(PPT, PDF, Word, Excel, image...) — it's optional. You can also save "
+        "the quote with just the numbers below, without any file."
+    )
+
+    # ── Attachment (optional) ────────────────────────────────────────────────
+    st.markdown("### 📎 Supporting File (optional)")
+
+    if loaded_id:
+        existing_name  = st.session_state.get("original_excel_name", "")
+        existing_bytes = st.session_state.get("original_excel_bytes")
+        if existing_name:
+            cap_col, dl_col = st.columns([4, 1])
+            with cap_col:
+                st.caption(f"Currently attached: {existing_name}")
+            with dl_col:
+                if existing_bytes:
+                    st.download_button(
+                        "⬇️ Download",
+                        data=existing_bytes,
+                        file_name=existing_name,
+                        mime=_mime_for_filename(existing_name),
+                        key="dl_loaded_manual_original",
+                        use_container_width=True,
+                    )
+        else:
+            st.caption("No file attached to this quote.")
+
+        replacement = st.file_uploader(
+            "Replace attached file", key="manual_file_upload",
+            help="Leave empty to keep the current file (or keep having none).",
+        )
+        if replacement is not None:
+            replacement.seek(0)
+            st.session_state["original_excel_bytes"] = replacement.read()
+            st.session_state["original_excel_name"]  = replacement.name
+    else:
+        uploaded = st.file_uploader(
+            "Attach a file", key="manual_file_upload",
+            help="PPT, PDF, Word, Excel, image... whatever you already have for this quote.",
+        )
+        if uploaded is not None:
+            uploaded.seek(0)
+            st.session_state["original_excel_bytes"] = uploaded.read()
+            st.session_state["original_excel_name"]  = uploaded.name
+
+    st.divider()
+
+    # ── Manual fields ─────────────────────────────────────────────────────────
+    st.markdown("### 📄 Quote Details")
+
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        st.text_input("Quote # (optional)", key="manual_quote_number")
+    with mc2:
+        st.text_input("Currency", key="manual_currency", value=st.session_state.get("manual_currency", "AUD"))
+
+    mc3, mc4 = st.columns(2)
+    with mc3:
+        st.date_input("Offer Date", key="manual_offer_date_obj", format="DD/MM/YYYY")
+    with mc4:
+        st.date_input("Expiry Date", key="manual_expiry_date_obj", format="DD/MM/YYYY")
+
+    mc5, mc6 = st.columns(2)
+    with mc5:
+        st.number_input("Cost Total ($)", min_value=0.0, step=0.01, format="%.2f", key="manual_cost_total")
+    with mc6:
+        st.number_input("Sell Price / PVP ($)", min_value=0.0, step=0.01, format="%.2f", key="manual_sell_total")
+
+    st.text_area("Notes / Description (optional)", key="manual_notes", height=100)
+
+    st.divider()
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+    st.markdown("### 📊 Summary")
+
+    cost_total   = float(st.session_state.get("manual_cost_total") or 0.0)
+    sell_total   = float(st.session_state.get("manual_sell_total") or 0.0)
+    cost_gst     = cost_total * 0.10
+    cost_inc_gst = cost_total + cost_gst
+    sell_gst     = sell_total * 0.10
+    sell_inc_gst = sell_total + sell_gst
+
+    summary = pd.DataFrame([
+        {"": "Subtotal (ex. GST)", "Cost": fmt(cost_total),   "Sell Price": fmt(sell_total),
+         "Difference": fmt(sell_total   - cost_total)},
+        {"": "GST (10%)",          "Cost": fmt(cost_gst),     "Sell Price": fmt(sell_gst),
+         "Difference": fmt(sell_gst     - cost_gst)},
+        {"": "Total (inc. GST)",   "Cost": fmt(cost_inc_gst), "Sell Price": fmt(sell_inc_gst),
+         "Difference": fmt(sell_inc_gst - cost_inc_gst)},
+    ])
+
+    _, col_mid, _ = st.columns([1, 2, 1])
+    with col_mid:
+        st.html(render_summary_table(summary))
+
+    # ── Save to Repository ──────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 💾 Save to Repository")
+
+    info = st.session_state.get("confirmed_client_info", {})
+
+    client_val         = (st.session_state.get("quote_client") or info.get("client") or "").strip()
+    title_val          = (st.session_state.get("quote_title") or info.get("title") or "").strip()
+    contact_val        = st.session_state.get("quote_contact") or info.get("contact") or ""
+    contact_title_val  = st.session_state.get("quote_contact_title") or info.get("contact_title") or ""
+    contact_mobile_val = st.session_state.get("quote_contact_mobile") or info.get("contact_mobile") or ""
+    email_val          = st.session_state.get("quote_email") or info.get("email") or ""
+
+    can_save  = bool(client_val) and bool(title_val)
+    is_update = bool(loaded_id)
+
+    if not can_save:
+        st.warning("Fill in at least **Company** and **Proposal title** to be able to save.")
+
+    save_label = "💾 Update Quote" if is_update else "💾 Save Quote"
+
+    if st.button(save_label, type="primary", disabled=not can_save, key="manual_save_btn"):
+        offer_date  = st.session_state.get("manual_offer_date_obj") or datetime.today().date()
+        expiry_date = st.session_state.get("manual_expiry_date_obj")
+
+        meta = {
+            "quote_number": st.session_state.get("manual_quote_number", "").strip() or "—",
+            "expiry":       expiry_date.strftime("%d/%m/%Y") if expiry_date else "—",
+            "currency":     st.session_state.get("manual_currency", "AUD").strip() or "AUD",
+            "notes":        st.session_state.get("manual_notes", "").strip(),
+        }
+
+        with st.spinner("Updating repository..." if is_update else "Saving to repository..."):
+            try:
+                record = quotes_repo.save_quote(
+                    client=client_val,
+                    contact=contact_val,
+                    contact_title=contact_title_val,
+                    contact_mobile=contact_mobile_val,
+                    email=email_val,
+                    title=title_val,
+                    date=offer_date.strftime("%d/%m/%Y"),
+                    meta=meta,
+                    items=None,
+                    margin_pct=0.0,
+                    distributor=quotes_repo.DISTRIBUTOR_MADIT,
+                    file_bytes=st.session_state.get("original_excel_bytes"),
+                    original_filename=st.session_state.get("original_excel_name", ""),
+                    record_id=loaded_id,
+                    manual_cost_total=cost_total,
+                    manual_sell_total=sell_total,
+                )
+            except Exception as e:
+                st.error(f"❌ Error saving to repository: {e}")
+                record = None
+
+        if record:
+            st.session_state["quote_client"]         = client_val
+            st.session_state["quote_title"]          = title_val
+            st.session_state["quote_contact"]        = contact_val
+            st.session_state["quote_contact_title"]  = contact_title_val
+            st.session_state["quote_contact_mobile"] = contact_mobile_val
+            st.session_state["quote_email"]          = email_val
+            st.session_state["quote_date_obj"]       = offer_date
+
+            st.session_state["quote_saved_record"]   = record
+            st.session_state["loaded_record_id"]     = record["id"]
+            st.session_state["opened_from_history"]  = True
+            st.session_state["original_excel_name"]  = record.get("filename", "")
+            snapshot_client_info()
+
+            quote_num = record.get("quote_number", "—")
+            suffix    = f" — Quote #{quote_num}" if quote_num and quote_num != "—" else ""
+            st.success(f"✅ Quote updated{suffix}" if is_update else f"✅ Quote saved{suffix}")
+
+
+def _show_distributor_quote(loaded_id):
+    from tools.quotes import quotes_repo
 
     # ── Step 2: upload distributor quote (skipped if loaded from repo) ───────
     if loaded_id:
@@ -1066,13 +1295,6 @@ def _show_new_quote():
         st.html(render_summary_table(summary))
 
     # ── Save to Repository ───────────────────────────────────────────────────────
-    # Antes esta sección solo se mostraba "if not opened_from_history", lo
-    # que hacía imposible actualizar (o cambiar el cliente de) una quote ya
-    # guardada. Ahora se muestra siempre; el botón cambia a "Update Quote"
-    # cuando hay una quote cargada (loaded_record_id), y como ya se pasaba
-    # record_id a save_quote(), el guardado actualiza el registro existente
-    # en vez de crear uno nuevo — incluyendo mover el Excel a la carpeta del
-    # nuevo cliente si se cambió la empresa en el Paso 1.
     st.divider()
     st.markdown("### 💾 Save to Repository")
 
