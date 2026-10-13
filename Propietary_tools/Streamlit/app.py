@@ -130,7 +130,7 @@ else:
 
         pagina = st.radio(
             "Menu",
-            ["📋 QUOTES", "👥 CLIENTS", "🗓️ CALENDAR", "🗂️ KANBAN"],
+            ["📋 QUOTES", "👥 CLIENTS", "🗓️ CALENDAR", "🗂️ KANBAN", "📡 TRANSCEIVERS"],
             label_visibility="hidden"
         )
 
@@ -152,4 +152,7 @@ else:
         show()
     elif pagina == "🗂️ KANBAN":
         from tools.kanban.kanban_tool import show
+        show()
+    elif pagina == "📡 TRANSCEIVERS":
+        from tools.transceivers.transceivers_tool import show
         show()
