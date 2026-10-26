@@ -3,13 +3,14 @@
 Page for the MADIT internal portal. Exposes show(), like the other tools.
 
 Tabs:
-  1. Catalog  - full Flexoptix catalogue in USD: list price, my price (self-configure),
-                sell price (my price + margin), filters, CSV export.
+  1. Inventory - where each module is (vendor, switch, port, location...), saved in the
+                private GitHub repo by inventory_db.py. Opens by default.
   2. Product  - lookup by part number with specifications and compatibilities.
   3. Serials  - lookup by serial number with Flexoptix's Serial Number API: model,
                 key specifications, delivery and order; units by model.
-  4. Inventory - where each module is (vendor, switch, port, location...), saved in the
-                private GitHub repo by inventory_db.py.
+  4. Catalog  - full Flexoptix catalogue in USD: list price, my price (self-configure),
+                sell price (my price + margin), filters, CSV export. Margin and
+                connection test are shown only here.
 
 Credentials: Streamlit secrets, section [flexoptix] (and [github] for the inventory,
 the same one the Clients tool uses):
@@ -1107,28 +1108,29 @@ def tab_inventory() -> None:
 # Entry point (same convention as the other tools)
 # --------------------------------------------------------------------------
 def show() -> None:
-    st.title("📡 Transceivers")
-    st.caption("Flexoptix catalogue, product compatibilities and serial number lookup. Prices in USD.")
+    st.title(":material/cable: Transceivers")
 
-    s1, s2, _ = st.columns([1.2, 1, 3])
-    margin = s1.number_input(
-        "Margin (%)", value=20.0, step=1.0, key="fx_margin",
-        help="Sell price = my price × (1 + margin). My price is the self-configure price.",
-    )
-    s2.write("")  # vertical alignment with the number input
-    if s2.button("Test connection", key="fx_test"):
-        try:
-            get_token(force=True)
-            st.success("Connected")
-        except ApiError as exc:
-            st.error(str(exc))
+    # Margin lives inside the Catalog tab; the other tabs read the stored value.
+    margin = float(st.session_state.get("fx_margin", 20.0))
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Catalog", "Product", "Serials", "Inventory"])
-    with tab1:
-        tab_catalog(margin)
-    with tab2:
-        tab_product(margin)
-    with tab3:
-        tab_serials()
-    with tab4:
+    tab_inv, tab_prod, tab_ser, tab_cat = st.tabs(["Inventory", "Product", "Serials", "Catalog"])
+    with tab_inv:
         tab_inventory()
+    with tab_prod:
+        tab_product(margin)
+    with tab_ser:
+        tab_serials()
+    with tab_cat:
+        s1, s2, _ = st.columns([1.2, 1, 3])
+        margin = s1.number_input(
+            "Margin (%)", value=20.0, step=1.0, key="fx_margin",
+            help="Sell price = my price × (1 + margin). My price is the self-configure price.",
+        )
+        s2.write("")  # vertical alignment with the number input
+        if s2.button("Test connection", key="fx_test"):
+            try:
+                get_token(force=True)
+                st.success("Connected")
+            except ApiError as exc:
+                st.error(str(exc))
+        tab_catalog(margin)
