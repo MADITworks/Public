@@ -855,20 +855,34 @@ def _duplicate_module(serial: str, modules: dict) -> None:
 
     with st.expander("Duplicate this module"):
         st.caption(
-            "Creates new modules with the same fields as this one (vendor, customer, device, "
-            "location, rack, status, comments...). The Flexoptix info is looked up for each new "
-            "serial. The port is NOT copied, because a port holds only one module."
+            "Creates one or many new modules with the same fields as this one (vendor, customer, "
+            "device, location, rack, status, comments...). Type the serials or upload a CSV/TXT. "
+            "The Flexoptix info is looked up for each new serial. The port is NOT copied, because "
+            "a port holds only one module."
         )
         new_text = st.text_area("New serial numbers (one per line)", height=90, key=k("dup_text"))
+        new_upload = st.file_uploader(
+            "...or upload a CSV/TXT with many serials (column named serial / serial_number / sn, "
+            "otherwise the first column)",
+            type=["csv", "txt"], key=k("dup_file"),
+        )
         new_bay = st.text_input(
             "Port for the new module (only used if you enter a single serial)", key=k("dup_bay")
         )
         if not st.button("Duplicate", key=k("dup_btn")):
             return
 
-        serials = [s for s in parse_serials(new_text, None) if s not in modules]
+        parsed = parse_serials(new_text, new_upload)
+        if not parsed:
+            st.warning("No serial numbers: type them or upload a file.")
+            return
+        if len(parsed) > 1000:
+            st.warning("Maximum 1000 serials per run.")
+            return
+        serials = [s for s in parsed if s not in modules]
+        already = len(parsed) - len(serials)
         if not serials:
-            st.warning("No new serial numbers (empty, or they already exist in the inventory).")
+            st.warning("All those serial numbers already exist in the inventory.")
             return
 
         fields = {f: rec.get(f, "") for f in inv_db.TEXT_FIELDS}
@@ -885,8 +899,9 @@ def _duplicate_module(serial: str, modules: dict) -> None:
 
         records: dict = {}
         not_found: list[str] = []
+        bar = st.progress(0.0, text="Looking up...")
         try:
-            for s in serials:
+            for i, s in enumerate(serials, 1):
                 status_api, item = lookup_serial(s)
                 if status_api == "ok":
                     row = serial_row(s, item)
@@ -895,10 +910,13 @@ def _duplicate_module(serial: str, modules: dict) -> None:
                 else:
                     not_found.append(s)
                     records[s] = inv_db.new_record(s, fallback, **fields)
+                bar.progress(i / len(serials), text=f"{i}/{len(serials)}: {s} → {status_api}")
                 time.sleep(0.1)
         except ApiError as exc:
             st.error(str(exc))
             return
+        finally:
+            bar.empty()
 
         try:
             added, _present = inv_db.add_modules(records)
@@ -907,6 +925,8 @@ def _duplicate_module(serial: str, modules: dict) -> None:
             return
 
         msg = f"{added} module(s) duplicated from {serial}."
+        if already:
+            msg += f" {already} were already in the inventory and were skipped."
         if not_found:
             msg += (" Not recognised by Flexoptix (model data copied from the original): "
                     + ", ".join(not_found) + ".")
