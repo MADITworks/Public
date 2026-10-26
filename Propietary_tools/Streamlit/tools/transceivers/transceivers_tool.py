@@ -3,10 +3,11 @@
 Page for the MADIT internal portal. Exposes show(), like the other tools.
 
 Tabs:
-  1. Catalogue  - full Flexoptix catalogue, filters, cost/sell price in AUD, CSV export.
-  2. Product    - lookup by part number with specifications and compatibilities.
-  3. Serials    - lookup by serial number (needs the Serial Number API to be activated
-                  by Flexoptix for your account).
+  1. Catalog  - full Flexoptix catalogue in USD: list price, my price (self-configure),
+                sell price (my price + margin), filters, CSV export.
+  2. Product  - lookup by part number with specifications and compatibilities.
+  3. Serials  - lookup by serial number (needs the Serial Number API to be activated
+                by Flexoptix for your account).
 
 Credentials: Streamlit secrets, section [flexoptix]:
 
@@ -33,16 +34,16 @@ import streamlit as st
 
 API_V1 = "https://www.flexoptix.net/rest/V1"
 API_V2 = "https://www.flexoptix.net/rest/V2"
+CURRENCY = "USD"           # USD only for now
 TIMEOUT = 60
 PAGE_LIMIT = 500           # the docs recommend not going above 500
 MAX_PAGES = 200            # safety brake
-CURRENCIES = ["USD", "EUR", "GBP", "CHF"]
 TOKEN_TTL = 50 * 60        # token lasts 1 hour; refresh earlier
 CATALOG_TTL = 6 * 3600     # on-disk catalogue cache
 CACHE_DIR = Path(tempfile.gettempdir()) / "madit_flexoptix"
 
 CATALOG_COLS = [
-    "sku", "name", "type", "parent_sku", "parent_configured_value",
+    "sku", "name", "type", "parent_sku",
     "price", "self_configure_price", "list_price", "stock", "url", "image",
 ]
 NUMERIC_COLS = ["price", "self_configure_price", "list_price", "stock"]
@@ -90,6 +91,29 @@ def flatten(value, prefix: str = "") -> dict:
 
 def to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8-sig")
+
+
+def item_prices(item: dict, margin: float) -> tuple:
+    """(list price, my price, sell price) for one API product.
+
+    - my price   = self_configure_price, or the normal price if there is none
+    - list price = list_price, or the normal price (the API only sends list_price
+                   when it differs from the normal price)
+    - sell price = my price + margin
+    """
+    def num(v):
+        try:
+            return None if v is None else float(v)
+        except (TypeError, ValueError):
+            return None
+
+    price = num(item.get("price"))
+    mine = num(item.get("self_configure_price"))
+    mine = mine if mine is not None else price
+    listed = num(item.get("list_price"))
+    listed = listed if listed is not None else price
+    sell = round(mine * (1 + margin / 100), 2) if mine is not None else None
+    return listed, mine, sell
 
 
 # --------------------------------------------------------------------------
@@ -160,12 +184,12 @@ def api_get(url: str, params: dict | None = None) -> requests.Response:
 # --------------------------------------------------------------------------
 # Catalogue
 # --------------------------------------------------------------------------
-def fetch_catalog(currency: str, status=None) -> list[dict]:
+def fetch_catalog(status=None) -> list[dict]:
     items: list[dict] = []
     for page in range(1, MAX_PAGES + 1):
         r = api_get(
             f"{API_V2}/flexoptix/products",
-            {"page": page, "limit": PAGE_LIMIT, "currency": currency},
+            {"page": page, "limit": PAGE_LIMIT, "currency": CURRENCY},
         )
         if not r.ok:
             raise ApiError(f"Catalogue page {page}: HTTP {r.status_code} {r.text[:200]}")
@@ -178,12 +202,12 @@ def fetch_catalog(currency: str, status=None) -> list[dict]:
     return unescape_all(items)
 
 
-def load_catalog(currency: str, force: bool = False, status=None):
-    path = CACHE_DIR / f"catalog_{currency}.json"
+def load_catalog(force: bool = False, status=None):
+    path = CACHE_DIR / f"catalog_{CURRENCY}.json"
     if not force and path.exists() and time.time() - path.stat().st_mtime < CATALOG_TTL:
         return json.loads(path.read_text(encoding="utf-8")), path.stat().st_mtime
 
-    items = fetch_catalog(currency, status)
+    items = fetch_catalog(status)
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
@@ -192,7 +216,7 @@ def load_catalog(currency: str, force: bool = False, status=None):
     return items, time.time()
 
 
-def tab_catalog(currency: str, fx: float, discount: float, margin: float) -> None:
+def tab_catalog(margin: float) -> None:
     c1, c2 = st.columns([1, 4])
     load_clicked = c1.button("Load / refresh catalog", type="primary", key="fx_load")
     force = c2.checkbox("Force a fresh download (ignore the 6-hour cache)", key="fx_force")
@@ -200,8 +224,8 @@ def tab_catalog(currency: str, fx: float, discount: float, margin: float) -> Non
     if load_clicked:
         placeholder = st.empty()
         try:
-            items, ts = load_catalog(currency, force, placeholder)
-            st.session_state["fx_catalog"] = {"items": items, "ts": ts, "currency": currency}
+            items, ts = load_catalog(force, placeholder)
+            st.session_state["fx_catalog"] = {"items": items, "ts": ts}
         except ApiError as exc:
             st.error(str(exc))
         finally:
@@ -212,14 +236,8 @@ def tab_catalog(currency: str, fx: float, discount: float, margin: float) -> Non
         st.info("Click “Load / refresh catalog” to download the Flexoptix catalogue.")
         return
 
-    cat_currency = cat["currency"]
-    if cat_currency != currency:
-        st.warning(
-            f"The loaded catalogue is in {cat_currency} but the selected currency is "
-            f"{currency}. Click “Load / refresh catalog” to switch."
-        )
     st.caption(
-        f"Catalogue in {cat_currency} · downloaded "
+        f"Catalogue in {CURRENCY} · downloaded "
         f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(cat['ts']))}"
     )
 
@@ -229,8 +247,16 @@ def tab_catalog(currency: str, fx: float, discount: float, margin: float) -> Non
             df[col] = None
     for col in NUMERIC_COLS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["cost_aud"] = (df["price"] * (1 - discount / 100) * fx).round(2)
-    df["sell_aud"] = (df["cost_aud"] * (1 + margin / 100)).round(2)
+
+    # My price = self-configure price (or the normal price if there is none).
+    # List price = list_price (the API omits it when it equals the normal price).
+    df["my_price"] = df["self_configure_price"].fillna(df["price"])
+    df["list_price"] = df["list_price"].fillna(df["price"])
+    df["sell_price"] = (df["my_price"] * (1 + margin / 100)).round(2)
+
+    dups = int(df["sku"].duplicated().sum())
+    if dups:
+        st.warning(f"{dups} SKUs appear more than once in the API response.")
 
     # Filters
     f1, f2, f3, f4 = st.columns([3, 1.5, 2.5, 1.5])
@@ -239,7 +265,7 @@ def tab_catalog(currency: str, fx: float, discount: float, margin: float) -> Non
     types = sorted(str(t) for t in df["type"].dropna().unique())
     selected_types = f3.multiselect("Type", types, key="fx_types") if types else []
     max_price = f4.number_input(
-        f"Max price ({cat_currency})", min_value=0.0, value=0.0, step=10.0,
+        f"Max my price ({CURRENCY})", min_value=0.0, value=0.0, step=10.0,
         help="0 = no limit", key="fx_maxprice",
     )
 
@@ -254,34 +280,29 @@ def tab_catalog(currency: str, fx: float, discount: float, margin: float) -> Non
     if selected_types:
         df = df[df["type"].astype(str).isin(selected_types)]
     if max_price > 0:
-        df = df[df["price"] <= max_price]
+        df = df[df["my_price"] <= max_price]
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Products shown", len(df))
     m2.metric("In stock", int((df["stock"].fillna(0) > 0).sum()))
     m3.metric("Total in catalogue", len(cat["items"]))
 
-    cols = [
-        "sku", "name", "type", "price", "self_configure_price", "list_price",
-        "cost_aud", "sell_aud", "stock", "parent_sku", "parent_configured_value", "url", "image",
-    ]
+    cols = ["sku", "name", "type", "list_price", "my_price", "sell_price", "stock", "parent_sku", "url", "image"]
     st.dataframe(
         df[cols],
         hide_index=True,
         column_config={
             "url": st.column_config.LinkColumn("Link"),
             "image": st.column_config.ImageColumn("Image"),
-            "price": st.column_config.NumberColumn(f"API price ({cat_currency})"),
-            "self_configure_price": st.column_config.NumberColumn("Self-configure price"),
-            "list_price": st.column_config.NumberColumn("List price"),
-            "cost_aud": st.column_config.NumberColumn("Your cost (AUD)"),
-            "sell_aud": st.column_config.NumberColumn("Sell price (AUD)"),
+            "list_price": st.column_config.NumberColumn(f"List price ({CURRENCY})"),
+            "my_price": st.column_config.NumberColumn(f"My price ({CURRENCY})"),
+            "sell_price": st.column_config.NumberColumn(f"Sell price ({CURRENCY})"),
         },
     )
     st.download_button(
         "Download CSV (current filters)",
         to_csv_bytes(df[cols]),
-        file_name=f"flexoptix_catalog_{cat_currency}.csv",
+        file_name=f"flexoptix_catalog_{CURRENCY}.csv",
         mime="text/csv",
         key="fx_dl_catalog",
     )
@@ -290,7 +311,7 @@ def tab_catalog(currency: str, fx: float, discount: float, margin: float) -> Non
 # --------------------------------------------------------------------------
 # Product by part number
 # --------------------------------------------------------------------------
-def tab_product(currency: str) -> None:
+def tab_product(margin: float) -> None:
     skus_text = st.text_area(
         "Part numbers (one per line or comma-separated)",
         placeholder="P.8596.02\nP.1396.10",
@@ -306,7 +327,7 @@ def tab_product(currency: str) -> None:
         if not skus:
             st.warning("Enter at least one part number.")
         else:
-            params: dict = {"sku[]": skus, "currency": currency}
+            params: dict = {"sku[]": skus, "currency": CURRENCY}
             if want_compat:
                 params["compatibilities"] = 1
             if want_specs:
@@ -317,7 +338,7 @@ def tab_product(currency: str) -> None:
                     st.error(f"HTTP {r.status_code}: {r.text[:300]}")
                 else:
                     st.session_state["fx_product"] = {
-                        "items": unescape_all(r.json()), "currency": currency, "requested": skus,
+                        "items": unescape_all(r.json()), "requested": skus,
                     }
             except ApiError as exc:
                 st.error(str(exc))
@@ -334,13 +355,16 @@ def tab_product(currency: str) -> None:
 
     for item in items:
         sku = str(item.get("sku"))
+        listed, mine, sell = item_prices(item, margin)
         with st.container(border=True):
             st.subheader(f"{sku} · {item.get('name', '')}")
-            m1, m2, m3 = st.columns(3)
-            m1.metric(f"Price ({res['currency']})", item.get("price"))
-            m2.metric("Stock", item.get("stock"))
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric(f"List price ({CURRENCY})", listed)
+            m2.metric(f"My price ({CURRENCY})", mine)
+            m3.metric(f"Sell price ({CURRENCY})", sell)
+            m4.metric("Stock", item.get("stock"))
             if item.get("url"):
-                m3.link_button("View on Flexoptix", item["url"])
+                m5.link_button("View on Flexoptix", item["url"])
 
             if item.get("specifications"):
                 st.markdown("**Specifications**")
@@ -461,22 +485,15 @@ def tab_serials() -> None:
 # --------------------------------------------------------------------------
 def show() -> None:
     st.title("📡 Transceivers")
-    st.caption("Flexoptix catalogue, product compatibilities and serial number lookup.")
+    st.caption("Flexoptix catalogue, product compatibilities and serial number lookup. Prices in USD.")
 
-    s1, s2, s3, s4, s5 = st.columns([1.2, 1.2, 1.4, 1.2, 1])
-    currency = s1.selectbox("Catalogue currency", CURRENCIES, key="fx_currency")
-    fx = s2.number_input(
-        f"{currency} → AUD rate", min_value=0.0, value=1.0, step=0.01, format="%.4f",
-        help="Enter today's exchange rate. With 1.0 prices are not converted.", key="fx_rate",
+    s1, s2, _ = st.columns([1.2, 1, 3])
+    margin = s1.number_input(
+        "Margin (%)", value=20.0, step=1.0, key="fx_margin",
+        help="Sell price = my price × (1 + margin). My price is the self-configure price.",
     )
-    discount = s3.number_input(
-        "Reseller discount (%)", min_value=0.0, max_value=100.0, value=0.0, step=1.0,
-        help="Applied to the API price to get your cost. Leave at 0 until you check "
-             "whether the API price already includes your discount.",
-        key="fx_discount",
-    )
-    margin = s4.number_input("Margin (%)", value=20.0, step=1.0, key="fx_margin")
-    if s5.button("Test connection", key="fx_test"):
+    s2.write("")  # vertical alignment with the number input
+    if s2.button("Test connection", key="fx_test"):
         try:
             get_token(force=True)
             st.success("Connected")
@@ -485,8 +502,8 @@ def show() -> None:
 
     tab1, tab2, tab3 = st.tabs(["Catalog", "Product", "Serials"])
     with tab1:
-        tab_catalog(currency, fx, discount, margin)
+        tab_catalog(margin)
     with tab2:
-        tab_product(currency)
+        tab_product(margin)
     with tab3:
         tab_serials()
