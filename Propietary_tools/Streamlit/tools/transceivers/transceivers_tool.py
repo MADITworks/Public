@@ -7,9 +7,12 @@ Tabs:
                 sell price (my price + margin), filters, CSV export.
   2. Product  - lookup by part number with specifications and compatibilities.
   3. Serials  - lookup by serial number with Flexoptix's Serial Number API: model,
-                key specifications, config code, delivery and order; units by model.
+                key specifications, delivery and order; units by model.
+  4. Inventory - where each module is (vendor, switch, port, location...), saved in the
+                private GitHub repo by inventory_db.py.
 
-Credentials: Streamlit secrets, section [flexoptix]:
+Credentials: Streamlit secrets, section [flexoptix] (and [github] for the inventory,
+the same one the Clients tool uses):
 
     [flexoptix]
     user = "your_api_user_email"
@@ -31,6 +34,8 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 import streamlit as st
+
+from tools.transceivers import inventory_db as inv_db
 
 API_V1 = "https://www.flexoptix.net/rest/V1"
 API_V2 = "https://www.flexoptix.net/rest/V2"
@@ -412,8 +417,6 @@ SERIAL_LABELS = {
     "status": "Status",
     "part_number": "Part number",
     "full_sku": "Full SKU",
-    "config_code": "Config code",
-    "vendor_profile": "Vendor profile",
     "product": "Product",
     "form_factor": "Form factor",
     "compliance": "Compliance",
@@ -426,8 +429,16 @@ SERIAL_LABELS = {
     "delivery_date": "Delivery date",
     "order": "Order",
     "order_date": "Order date",
+    "customer_reference": "Customer ref.",
 }
 SERIAL_COLS = list(SERIAL_LABELS)
+
+# What is copied from the API into an inventory record
+SNAPSHOT_KEYS = [
+    "part_number", "full_sku", "product", "form_factor", "compliance", "distance",
+    "wavelength_tx", "temp_range", "connector", "fibre",
+    "delivery_slip", "delivery_date", "order", "order_date", "customer_reference",
+]
 
 
 def parse_serials(text: str, upload) -> list[str]:
@@ -510,48 +521,50 @@ def serial_row(serial: str, item: dict) -> dict:
         if label and label not in specs:  # some labels repeat; keep the first
             specs[label] = spec.get("value")
 
-    sku = str(item.get("sku") or "")
-    product_sku = str(product.get("product_sku") or "")
-    code = sku[len(product_sku) + 1:] if product_sku and sku.startswith(product_sku + "-") else ""
-
     row = {
         "serial": item.get("serial_number") or serial,
         "status": "ok",
-        "part_number": product_sku,
-        "full_sku": sku,
-        "config_code": code,
-        "vendor_profile": "",
+        "part_number": str(product.get("product_sku") or ""),
+        "full_sku": str(item.get("sku") or ""),
         "product": product.get("name", ""),
         "delivery_slip": delivery.get("delivery_slip_number", ""),
         "delivery_date": delivery.get("delivery_slip_date", ""),
         "order": order.get("order_increment_id", ""),
         "order_date": order.get("order_date", ""),
+        "customer_reference": order.get("customer_reference", ""),
     }
     for label, col in KEY_SPECS.items():
         row[col] = specs.get(label, "")
     return row
 
 
-def vendor_map(product_sku: str) -> dict:
-    """config code -> vendor name, from the product's compatibilities (cached per session)."""
-    cache = st.session_state.setdefault("fx_vendor_cache", {})
+def flexoptix_snapshot(row: dict) -> dict:
+    return {k: row.get(k, "") for k in SNAPSHOT_KEYS}
+
+
+def compat_vendors(product_sku: str) -> list[str]:
+    """Vendor names Flexoptix lists as compatible for a product (cached per session)."""
+    cache = st.session_state.setdefault("fx_vendors_cache", {})
     if product_sku in cache:
         return cache[product_sku]
-    mapping: dict = {}
     try:
         r = api_get(
             f"{API_V2}/flexoptix/products",
             {"sku[]": [product_sku], "currency": CURRENCY, "compatibilities": 1},
         )
     except ApiError:
-        return mapping  # not cached: try again next time
+        return []
+    names: set[str] = set()
     if r.ok:
         for prod in unescape_all(r.json()):
             if str(prod.get("sku")) == product_sku:
                 for comp in prod.get("compatibilities") or []:
-                    mapping[str(comp.get("sku"))] = comp.get("compatible_to_vendor", "")
-        cache[product_sku] = mapping
-    return mapping
+                    name = str(comp.get("compatible_to_vendor") or "").strip()
+                    if name:
+                        names.add(name)
+        cache[product_sku] = sorted(names)
+        return cache[product_sku]
+    return []
 
 
 def tab_serials() -> None:
@@ -559,19 +572,15 @@ def tab_serials() -> None:
         "Looks up each serial number with Flexoptix's Serial Number API. The API answers one "
         "serial at a time and has no “list everything I own” call, so you provide the serial "
         "numbers (from the labels, your stock records or a scan) and it returns the model, "
-        "specifications and, when available, the delivery and order each one came from."
+        "specifications and, when available, the delivery and order each one came from. "
+        "It does not return the programming profile."
     )
     text = st.text_area("Serial numbers (one per line)", height=140, key="fx_serials_text")
     upload = st.file_uploader(
         "...or upload a CSV/TXT (column named serial / serial_number / sn, otherwise the first column)",
         type=["csv", "txt"], key="fx_serials_file",
     )
-    o1, o2 = st.columns(2)
-    resolve_vendor = o1.checkbox(
-        "Resolve the config code to a vendor name (extra catalogue lookup per model)",
-        value=True, key="fx_serials_vendor",
-    )
-    refresh = o2.checkbox("Re-query serials already looked up in this session", key="fx_serials_refresh")
+    refresh = st.checkbox("Re-query serials already looked up in this session", key="fx_serials_refresh")
 
     if st.button("Look up serials", type="primary", key="fx_serials_btn"):
         serials = parse_serials(text, upload)
@@ -594,16 +603,12 @@ def tab_serials() -> None:
                             cache[serial] = item
                         time.sleep(0.1)
                     if item is not None:
-                        raw[serial] = item
-                        rows.append(serial_row(serial, item))
+                        row = serial_row(serial, item)
+                        raw[row["serial"]] = item
+                        rows.append(row)
                     else:
                         rows.append({"serial": serial, "status": status})
                     bar.progress(i / len(serials), text=f"{i}/{len(serials)}: {serial} → {status}")
-
-                if resolve_vendor:
-                    for row in rows:
-                        if row.get("config_code") and row.get("part_number"):
-                            row["vendor_profile"] = vendor_map(row["part_number"]).get(row["config_code"], "")
             except ApiError as exc:
                 st.error(str(exc))
             finally:
@@ -652,17 +657,8 @@ def tab_serials() -> None:
 
     st.markdown("**Every serial**")
     st.dataframe(
-        view,
-        hide_index=True,
-        column_config={
-            col: st.column_config.TextColumn(
-                label,
-                help=("Suffix of the full SKU (e.g. P.1396.10-CME01 → CME01). Probably the "
-                      "programming profile; not confirmed by the API docs.")
-                if col == "config_code" else None,
-            )
-            for col, label in SERIAL_LABELS.items()
-        },
+        view, hide_index=True,
+        column_config={col: st.column_config.TextColumn(label) for col, label in SERIAL_LABELS.items()},
     )
 
     d1, d2 = st.columns(2)
@@ -674,6 +670,18 @@ def tab_serials() -> None:
         file_name="flexoptix_serials.json", mime="application/json", key="fx_dl_serials_json",
     )
 
+    # Send what is listed above to the inventory (one commit, no new API calls)
+    listed = [s for s in view.loc[view["status"] == "ok", "serial"] if s in res["raw"]]
+    if listed and st.button(f"Add the {len(listed)} listed serials to the inventory", key="fx_serials_to_inv"):
+        records = {
+            s: inv_db.new_record(s, flexoptix_snapshot(serial_row(s, res["raw"][s]))) for s in listed
+        }
+        try:
+            added, present = inv_db.add_modules(records)
+            st.success(f"{added} added to the inventory, {present} were already there.")
+        except Exception as exc:  # GitHub / configuration problems
+            st.error(f"Could not save to the inventory: {exc}")
+
     if res["raw"]:
         picked = st.selectbox("Details for one serial", list(res["raw"]), key="fx_serial_pick")
         item = res["raw"][picked]
@@ -683,6 +691,321 @@ def tab_serials() -> None:
             st.dataframe(pd.DataFrame(specs), hide_index=True)
         if st.checkbox("Show raw JSON", key="fx_serial_rawjson"):
             st.json(item)
+
+
+# --------------------------------------------------------------------------
+# Inventory (stored in the private GitHub repo by inventory_db)
+# --------------------------------------------------------------------------
+OTHER = "Other…"
+
+INV_LABELS = {
+    "serial": "Serial",
+    "status": "Status",
+    "model": "Model",
+    "form_factor": "Form factor",
+    "vendor": "Vendor",
+    "profile_code": "Profile code",
+    "client": "Client",
+    "device": "Device / switch",
+    "device_type": "Device type",
+    "module_bay": "Port",
+    "location": "Location",
+    "rack": "Rack",
+    "asset_tag": "Asset tag",
+    "order": "Order",
+    "customer_reference": "Customer ref.",
+    "tags": "Tags",
+    "updated": "Updated",
+}
+INV_COLS = list(INV_LABELS)
+
+FLEX_INFO_LABELS = {
+    "product": "Product", "part_number": "Part number", "full_sku": "SKU",
+    "form_factor": "Form factor", "compliance": "Compliance", "distance": "Distance",
+    "wavelength_tx": "λ TX (typ.)", "temp_range": "Temp. range", "connector": "Connector",
+    "fibre": "Fibre", "order": "Order", "order_date": "Order date",
+    "customer_reference": "Customer ref.", "delivery_slip": "Delivery slip",
+    "delivery_date": "Delivery date",
+}
+
+
+def _flex(rec: dict) -> dict:
+    return rec.get("flexoptix") or {}
+
+
+def _model(rec: dict) -> str:
+    return rec.get("model") or _flex(rec).get("product", "")
+
+
+def _inventory_frame(modules: dict) -> pd.DataFrame:
+    rows = []
+    for serial, rec in modules.items():
+        fx = _flex(rec)
+        rows.append({
+            "serial": serial,
+            "status": rec.get("status", ""),
+            "model": _model(rec),
+            "form_factor": fx.get("form_factor", ""),
+            "vendor": rec.get("vendor", ""),
+            "profile_code": rec.get("profile_code", ""),
+            "client": rec.get("client", ""),
+            "device": rec.get("device", ""),
+            "device_type": rec.get("device_type", ""),
+            "module_bay": rec.get("module_bay", ""),
+            "location": rec.get("location", ""),
+            "rack": rec.get("rack", ""),
+            "asset_tag": rec.get("asset_tag", ""),
+            "order": fx.get("order", ""),
+            "customer_reference": fx.get("customer_reference", ""),
+            "tags": ", ".join(rec.get("tags") or []),
+            "updated": rec.get("updated", ""),
+        })
+    return pd.DataFrame(rows, columns=INV_COLS).fillna("")
+
+
+def _summary(serial: str, rec: dict) -> str:
+    place = " ".join(p for p in (rec.get("device", ""), rec.get("module_bay", "")) if p)
+    parts = [serial, _model(rec)[:40], rec.get("status", ""), place]
+    return " · ".join(p for p in parts if p)
+
+
+def _add_serials_to_inventory(text: str, add_unknown: bool, modules: dict) -> None:
+    serials = [s for s in parse_serials(text, None) if s not in modules]
+    skipped = len(parse_serials(text, None)) - len(serials)
+    if not serials:
+        st.warning("Nothing to add: no serial numbers, or all of them are already in the inventory.")
+        return
+
+    records: dict = {}
+    unknown: list[str] = []
+    bar = st.progress(0.0, text="Looking up...")
+    try:
+        for i, serial in enumerate(serials, 1):
+            status, item = lookup_serial(serial)
+            if status == "ok":
+                row = serial_row(serial, item)
+                records[row["serial"]] = inv_db.new_record(row["serial"], flexoptix_snapshot(row))
+            else:
+                unknown.append(f"{serial} ({status})")
+                if add_unknown:
+                    records[serial] = inv_db.new_record(serial)
+            bar.progress(i / len(serials), text=f"{i}/{len(serials)}: {serial} → {status}")
+            time.sleep(0.1)
+    except ApiError as exc:
+        st.error(str(exc))
+        return
+    finally:
+        bar.empty()
+
+    if not records:
+        st.warning("None of the serials were found, so nothing was added. "
+                   "Tick “Also add serials Flexoptix does not recognise” to add them by hand.")
+        return
+    try:
+        added, present = inv_db.add_modules(records)
+    except Exception as exc:
+        st.error(f"Could not save to the inventory: {exc}")
+        return
+
+    msg = f"{added} serial(s) added to the inventory."
+    if skipped:
+        msg += f" {skipped} were already there."
+    if unknown:
+        msg += " Not recognised by Flexoptix: " + ", ".join(unknown) + "."
+    st.session_state["fx_inv_flash"] = msg
+    st.rerun()
+
+
+def _edit_module(serial: str, modules: dict) -> None:
+    rec = modules[serial]
+    fx = _flex(rec)
+
+    def key(field: str) -> str:
+        return f"fx_invf_{serial}_{field}"
+
+    st.markdown(f"#### {serial}")
+    left, right = st.columns(2)
+
+    # ── Module (like NetBox: device, bay, status, description, asset tag) ──
+    with left:
+        statuses = list(inv_db.STATUSES)
+        if rec.get("status") and rec["status"] not in statuses:
+            statuses.append(rec["status"])
+        status = st.selectbox("Status", statuses, index=statuses.index(rec.get("status") or statuses[0]),
+                              key=key("status"))
+        device = st.text_input("Device / switch ID", value=rec.get("device", ""), key=key("device"))
+        device_type = st.text_input("Device type (switch model)", value=rec.get("device_type", ""),
+                                    key=key("device_type"))
+        module_bay = st.text_input("Port / module bay", value=rec.get("module_bay", ""),
+                                   placeholder="Ethernet1/1", key=key("module_bay"))
+        asset_tag = st.text_input("Asset tag", value=rec.get("asset_tag", ""), key=key("asset_tag"))
+        description = st.text_input("Description", value=rec.get("description", ""), key=key("description"))
+
+    # ── Programming, ownership and place ──
+    with right:
+        suggestions = set(compat_vendors(fx["part_number"])) if fx.get("part_number") else set()
+        suggestions |= {m.get("vendor") for m in modules.values() if m.get("vendor")}
+        current_vendor = rec.get("vendor", "")
+        if current_vendor:
+            suggestions.add(current_vendor)
+        options = [""] + sorted(suggestions) + [OTHER]
+        vendor_pick = st.selectbox(
+            "Vendor (programmed for)", options,
+            index=options.index(current_vendor) if current_vendor in options else 0,
+            key=key("vendor_pick"),
+            help="List taken from the vendors Flexoptix says this model is compatible with, "
+                 "plus the ones already used in your inventory.",
+        )
+        vendor = (st.text_input("Vendor name", key=key("vendor_other")) if vendor_pick == OTHER
+                  else vendor_pick)
+        profile_code = st.text_input("Programming profile code", value=rec.get("profile_code", ""),
+                                     placeholder="e.g. MSA01", key=key("profile_code"))
+        client = st.text_input("Client", value=rec.get("client", ""), key=key("client"))
+        location = st.text_input("Location (site / room)", value=rec.get("location", ""), key=key("location"))
+        rack = st.text_input("Rack / position", value=rec.get("rack", ""), key=key("rack"))
+        installed_on = st.text_input("Installed on (YYYY-MM-DD)", value=rec.get("installed_on", ""),
+                                     key=key("installed_on"))
+
+    model = rec.get("model", "")
+    if not fx.get("part_number"):
+        model = st.text_input("Model / part number (Flexoptix does not know this serial)",
+                              value=model, key=key("model"))
+
+    tags_text = st.text_input("Tags (comma-separated)", value=", ".join(rec.get("tags") or []),
+                              key=key("tags"))
+    comments = st.text_area("Comments", value=rec.get("comments", ""), key=key("comments"), height=90)
+
+    # A port can only hold one module: warn (do not block) about clashes
+    if device.strip() and module_bay.strip():
+        clash = [
+            s for s, m in modules.items()
+            if s != serial
+            and (m.get("device", "").strip().lower(), m.get("module_bay", "").strip().lower())
+            == (device.strip().lower(), module_bay.strip().lower())
+        ]
+        if clash:
+            st.warning(f"{device} {module_bay} is already assigned to {', '.join(clash)}.")
+
+    b1, b2, _ = st.columns([1, 1.4, 3])
+    if b1.button("Save changes", type="primary", key=key("save")):
+        changes = {
+            "status": status, "device": device.strip(), "device_type": device_type.strip(),
+            "module_bay": module_bay.strip(), "asset_tag": asset_tag.strip(),
+            "description": description.strip(), "vendor": (vendor or "").strip(),
+            "profile_code": profile_code.strip(), "client": client.strip(),
+            "location": location.strip(), "rack": rack.strip(), "installed_on": installed_on.strip(),
+            "tags": [t.strip() for t in tags_text.split(",") if t.strip()],
+            "comments": comments.strip(), "model": model.strip(),
+        }
+        try:
+            inv_db.save_module(serial, changes)
+            st.session_state["fx_inv_flash"] = f"Saved {serial}."
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Could not save: {exc}")
+
+    if b2.button("Refresh Flexoptix info", key=key("refresh")):
+        try:
+            status_api, item = lookup_serial(serial)
+            if status_api != "ok":
+                st.error(f"Flexoptix: {status_api}")
+            else:
+                inv_db.save_module(serial, {"flexoptix": flexoptix_snapshot(serial_row(serial, item))})
+                st.session_state["fx_inv_flash"] = f"Flexoptix info refreshed for {serial}."
+                st.rerun()
+        except Exception as exc:  # st.rerun() is not an Exception, so it passes through
+            st.error(str(exc))
+
+    if fx:
+        with st.expander("Flexoptix info (read-only)"):
+            info = [{"Field": FLEX_INFO_LABELS[k], "Value": fx.get(k, "")} for k in FLEX_INFO_LABELS if fx.get(k)]
+            st.dataframe(pd.DataFrame(info), hide_index=True)
+    else:
+        st.caption("No Flexoptix data for this serial.")
+
+    with st.expander("Delete this module"):
+        confirm = st.checkbox(f"Yes, delete {serial} from the inventory", key=key("confirm_delete"))
+        if st.button("Delete module", disabled=not confirm, key=key("delete")):
+            try:
+                inv_db.delete_module(serial)
+                st.session_state.pop("fx_inv_pick", None)
+                st.session_state["fx_inv_flash"] = f"Deleted {serial}."
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not delete: {exc}")
+
+
+def tab_inventory() -> None:
+    flash = st.session_state.pop("fx_inv_flash", None)
+    if flash:
+        st.success(flash)
+
+    top1, top2 = st.columns([5, 1])
+    top1.caption(
+        "Where each module is installed and what it is programmed for, similar to NetBox. "
+        "Saved in the private GitHub repository (Propietary_tools/Transceivers/inventory.json)."
+    )
+    reload = top2.button("Reload from GitHub", key="fx_inv_reload")
+    if reload:
+        for k in [k for k in st.session_state if str(k).startswith("fx_invf_")]:
+            del st.session_state[k]
+
+    try:
+        modules = inv_db.load_inventory(force=reload)
+    except Exception as exc:
+        st.error(f"Could not load the inventory: {exc}")
+        return
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Modules", len(modules))
+    m2.metric("Installed", sum(1 for m in modules.values() if m.get("status") == "Installed"))
+    m3.metric("In stock", sum(1 for m in modules.values() if m.get("status") == "In stock"))
+
+    with st.expander("➕ Add serials to the inventory"):
+        add_text = st.text_area("Serial numbers (one per line)", height=110, key="fx_inv_add_text")
+        add_unknown = st.checkbox(
+            "Also add serials Flexoptix does not recognise (fill in their details by hand)",
+            value=True, key="fx_inv_add_unknown",
+        )
+        if st.button("Look up and add", key="fx_inv_add_btn"):
+            _add_serials_to_inventory(add_text, add_unknown, modules)
+
+    if not modules:
+        st.info("The inventory is empty. Add serials above, or from the Serials tab.")
+        return
+
+    # ── Table with filters ──
+    df = _inventory_frame(modules)
+    f1, f2, f3 = st.columns([3, 2, 2])
+    text = f1.text_input("Search", placeholder="serial, switch, port, client, location...", key="fx_inv_search")
+    statuses = sorted(s for s in df["status"].unique() if s)
+    sel_status = f2.multiselect("Status", statuses, key="fx_inv_status_filter")
+    devices = sorted(d for d in df["device"].unique() if d)
+    sel_device = f3.multiselect("Device / switch", devices, key="fx_inv_device_filter")
+
+    if text:
+        hay = df.drop(columns=["updated"]).astype(str).agg(" ".join, axis=1).str.lower()
+        mask = pd.Series(True, index=df.index)
+        for term in text.lower().split():
+            mask &= hay.str.contains(term, regex=False)
+        df = df[mask]
+    if sel_status:
+        df = df[df["status"].isin(sel_status)]
+    if sel_device:
+        df = df[df["device"].isin(sel_device)]
+
+    st.dataframe(df, hide_index=True,
+                 column_config={c: st.column_config.TextColumn(l) for c, l in INV_LABELS.items()})
+    st.download_button("Download CSV", to_csv_bytes(df), file_name="transceivers_inventory.csv",
+                       mime="text/csv", key="fx_inv_dl")
+
+    # ── Edit one module ──
+    st.divider()
+    st.subheader("Edit a module")
+    serials = sorted(modules)
+    pick = st.selectbox("Serial number", serials, key="fx_inv_pick",
+                        format_func=lambda s: _summary(s, modules[s]))
+    _edit_module(pick, modules)
 
 
 # --------------------------------------------------------------------------
@@ -705,10 +1028,12 @@ def show() -> None:
         except ApiError as exc:
             st.error(str(exc))
 
-    tab1, tab2, tab3 = st.tabs(["Catalog", "Product", "Serials"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Catalog", "Product", "Serials", "Inventory"])
     with tab1:
         tab_catalog(margin)
     with tab2:
         tab_product(margin)
     with tab3:
         tab_serials()
+    with tab4:
+        tab_inventory()
