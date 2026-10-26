@@ -1128,7 +1128,12 @@ def show() -> None:
     st.markdown(
         """
         <style>
-        div[data-baseweb="tab-list"] button[data-baseweb="tab"]:last-of-type {
+        /* current Streamlit */
+        [data-testid="stTabs"] [role="tablist"] > [data-testid="stTab"]:last-child {
+            margin-left: auto;
+        }
+        /* older Streamlit (BaseWeb tabs) */
+        div[data-baseweb="tab-list"] > button[data-baseweb="tab"]:last-of-type {
             margin-left: auto;
         }
         </style>
