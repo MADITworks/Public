@@ -6,8 +6,8 @@ Tabs:
   1. Catalog  - full Flexoptix catalogue in USD: list price, my price (self-configure),
                 sell price (my price + margin), filters, CSV export.
   2. Product  - lookup by part number with specifications and compatibilities.
-  3. Serials  - lookup by serial number (needs the Serial Number API to be activated
-                by Flexoptix for your account).
+  3. Serials  - lookup by serial number with Flexoptix's Serial Number API: model,
+                key specifications, config code, delivery and order; units by model.
 
 Credentials: Streamlit secrets, section [flexoptix]:
 
@@ -392,20 +392,91 @@ def tab_product(margin: float) -> None:
 
 
 # --------------------------------------------------------------------------
-# Serial numbers
+# Serial numbers (Flexoptix Serial Number API)
 # --------------------------------------------------------------------------
+SERIAL_HEADERS = {"serial", "serial_number", "serial number", "serialnumber", "sn", "s/n"}
+
+# label in product.specifications -> column in the results table
+KEY_SPECS = {
+    "Form Factor": "form_factor",
+    "Compliance Code": "compliance",
+    "Distance": "distance",
+    "Wavelength TX (Typical)": "wavelength_tx",
+    "Temperature Range": "temp_range",
+    "Connector / Polish": "connector",
+    "Interface": "fibre",
+}
+
+SERIAL_LABELS = {
+    "serial": "Serial",
+    "status": "Status",
+    "part_number": "Part number",
+    "full_sku": "Full SKU",
+    "config_code": "Config code",
+    "vendor_profile": "Vendor profile",
+    "product": "Product",
+    "form_factor": "Form factor",
+    "compliance": "Compliance",
+    "distance": "Distance",
+    "wavelength_tx": "λ TX (typ.)",
+    "temp_range": "Temp. range",
+    "connector": "Connector",
+    "fibre": "Fibre",
+    "delivery_slip": "Delivery slip",
+    "delivery_date": "Delivery date",
+    "order": "Order",
+    "order_date": "Order date",
+}
+SERIAL_COLS = list(SERIAL_LABELS)
+
+
 def parse_serials(text: str, upload) -> list[str]:
-    lines = text.splitlines()
+    """Serials from the text box (one per line) and/or an uploaded CSV/TXT.
+
+    In an uploaded file, a header called serial / serial_number / sn selects the column;
+    otherwise the first column is used.
+    """
+    serials: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        s = raw.strip().strip('"').strip("'").strip()
+        if s and s.lower() not in SERIAL_HEADERS and s not in seen:
+            seen.add(s)
+            serials.append(s)
+
+    for line in text.splitlines():
+        add(re.split(r"[,;\t]", line)[0])
+
     if upload is not None:
-        lines += upload.getvalue().decode("utf-8-sig", errors="ignore").splitlines()
-    serials, seen = [], set()
-    for line in lines:
-        s = re.split(r"[,;\t]", line)[0].strip()
-        if not s or s.lower() == "serial" or s in seen:
-            continue
-        seen.add(s)
-        serials.append(s)
+        content = upload.getvalue().decode("utf-8-sig", errors="ignore")
+        rows = [re.split(r"[,;\t]", ln) for ln in content.splitlines() if ln.strip()]
+        col = 0
+        if rows:
+            for i, cell in enumerate(rows[0]):
+                if cell.strip().strip('"').lower() in SERIAL_HEADERS:
+                    col = i
+                    rows = rows[1:]
+                    break
+        for row in rows:
+            if col < len(row):
+                add(row[col])
     return serials
+
+
+def normalise_response(data) -> dict | None:
+    """The API answers with a list. Take the first result; if the list carries extra
+    objects without a serial_number (e.g. delivery / order blocks) merge them in."""
+    if isinstance(data, dict):
+        return data
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return None
+    merged = dict(data[0])
+    for extra in data[1:]:
+        if isinstance(extra, dict) and "serial_number" not in extra:
+            for k, v in extra.items():
+                merged.setdefault(k, v)
+    return merged
 
 
 def lookup_serial(serial: str) -> tuple[str, dict | None]:
@@ -416,21 +487,91 @@ def lookup_serial(serial: str) -> tuple[str, dict | None]:
         return "access denied (API not activated?)", None
     if not r.ok:
         return f"error HTTP {r.status_code}", None
-    data = r.json()
-    item = data[0] if isinstance(data, list) and data else data
+    item = normalise_response(r.json())
     if not item:
         return "not found", None
     return "ok", unescape_all(item)
 
 
+def _as_dict(value) -> dict:
+    if isinstance(value, list):
+        value = value[0] if value else {}
+    return value if isinstance(value, dict) else {}
+
+
+def serial_row(serial: str, item: dict) -> dict:
+    product = _as_dict(item.get("product"))
+    delivery = _as_dict(item.get("delivery"))
+    order = _as_dict(item.get("order"))
+
+    specs: dict = {}
+    for spec in product.get("specifications") or []:
+        label = spec.get("label")
+        if label and label not in specs:  # some labels repeat; keep the first
+            specs[label] = spec.get("value")
+
+    sku = str(item.get("sku") or "")
+    product_sku = str(product.get("product_sku") or "")
+    code = sku[len(product_sku) + 1:] if product_sku and sku.startswith(product_sku + "-") else ""
+
+    row = {
+        "serial": item.get("serial_number") or serial,
+        "status": "ok",
+        "part_number": product_sku,
+        "full_sku": sku,
+        "config_code": code,
+        "vendor_profile": "",
+        "product": product.get("name", ""),
+        "delivery_slip": delivery.get("delivery_slip_number", ""),
+        "delivery_date": delivery.get("delivery_slip_date", ""),
+        "order": order.get("order_increment_id", ""),
+        "order_date": order.get("order_date", ""),
+    }
+    for label, col in KEY_SPECS.items():
+        row[col] = specs.get(label, "")
+    return row
+
+
+def vendor_map(product_sku: str) -> dict:
+    """config code -> vendor name, from the product's compatibilities (cached per session)."""
+    cache = st.session_state.setdefault("fx_vendor_cache", {})
+    if product_sku in cache:
+        return cache[product_sku]
+    mapping: dict = {}
+    try:
+        r = api_get(
+            f"{API_V2}/flexoptix/products",
+            {"sku[]": [product_sku], "currency": CURRENCY, "compatibilities": 1},
+        )
+    except ApiError:
+        return mapping  # not cached: try again next time
+    if r.ok:
+        for prod in unescape_all(r.json()):
+            if str(prod.get("sku")) == product_sku:
+                for comp in prod.get("compatibilities") or []:
+                    mapping[str(comp.get("sku"))] = comp.get("compatible_to_vendor", "")
+        cache[product_sku] = mapping
+    return mapping
+
+
 def tab_serials() -> None:
     st.caption(
-        "Uses Flexoptix's Serial Number API. Access has to be requested from Flexoptix "
-        "(Transceiver Lookup or Service Desk) and activated for your API user. "
-        "A “not found” can mean the serial is too old to be registered yet, or the API is not active."
+        "Looks up each serial number with Flexoptix's Serial Number API. The API answers one "
+        "serial at a time and has no “list everything I own” call, so you provide the serial "
+        "numbers (from the labels, your stock records or a scan) and it returns the model, "
+        "specifications and, when available, the delivery and order each one came from."
     )
     text = st.text_area("Serial numbers (one per line)", height=140, key="fx_serials_text")
-    upload = st.file_uploader("...or upload a CSV/TXT (first column is used)", type=["csv", "txt"], key="fx_serials_file")
+    upload = st.file_uploader(
+        "...or upload a CSV/TXT (column named serial / serial_number / sn, otherwise the first column)",
+        type=["csv", "txt"], key="fx_serials_file",
+    )
+    o1, o2 = st.columns(2)
+    resolve_vendor = o1.checkbox(
+        "Resolve the config code to a vendor name (extra catalogue lookup per model)",
+        value=True, key="fx_serials_vendor",
+    )
+    refresh = o2.checkbox("Re-query serials already looked up in this session", key="fx_serials_refresh")
 
     if st.button("Look up serials", type="primary", key="fx_serials_btn"):
         serials = parse_serials(text, upload)
@@ -439,35 +580,93 @@ def tab_serials() -> None:
         elif len(serials) > 1000:
             st.warning("Maximum 1000 serials per run.")
         else:
-            rows, raw = [], {}
+            cache = st.session_state.setdefault("fx_serial_cache", {})
+            rows: list[dict] = []
+            raw: dict = {}
             bar = st.progress(0.0, text="Looking up...")
             try:
                 for i, serial in enumerate(serials, 1):
-                    status, item = lookup_serial(serial)
-                    row = {"serial": serial, "status": status}
+                    if serial in cache and not refresh:
+                        status, item = "ok", cache[serial]
+                    else:
+                        status, item = lookup_serial(serial)
+                        if status == "ok":
+                            cache[serial] = item
+                        time.sleep(0.1)
                     if item is not None:
                         raw[serial] = item
-                        row.update(flatten(item))
-                    rows.append(row)
+                        rows.append(serial_row(serial, item))
+                    else:
+                        rows.append({"serial": serial, "status": status})
                     bar.progress(i / len(serials), text=f"{i}/{len(serials)}: {serial} → {status}")
-                    time.sleep(0.2)
-                st.session_state["fx_serials"] = {"rows": rows, "raw": raw}
+
+                if resolve_vendor:
+                    for row in rows:
+                        if row.get("config_code") and row.get("part_number"):
+                            row["vendor_profile"] = vendor_map(row["part_number"]).get(row["config_code"], "")
             except ApiError as exc:
                 st.error(str(exc))
             finally:
                 bar.empty()
+            st.session_state["fx_serials"] = {"rows": rows, "raw": raw}
 
     res = st.session_state.get("fx_serials")
     if not res:
         return
 
-    df = pd.DataFrame(res["rows"])
-    ok = int((df["status"] == "ok").sum())
-    st.metric("Found", f"{ok} / {len(df)}")
-    st.dataframe(df, hide_index=True)
+    df = pd.DataFrame(res["rows"], columns=SERIAL_COLS).fillna("")
+    ok_df = df[df["status"] == "ok"]
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Found", f"{len(ok_df)} / {len(df)}")
+    m2.metric("Not found / errors", len(df) - len(ok_df))
+    m3.metric("Different models", ok_df["part_number"].nunique())
+
+    if len(df) > len(ok_df):
+        st.caption(
+            "“Not found” can mean the serial is not registered yet (older serials may still "
+            "be missing), it was mistyped, or the API is not active for your user."
+        )
+
+    forms = sorted(f for f in ok_df["form_factor"].unique() if f)
+    chosen_forms = st.multiselect("Filter by form factor", forms, key="fx_serials_forms") if forms else []
+    view = df
+    if chosen_forms:
+        view = df[df["form_factor"].isin(chosen_forms)]
+
+    st.markdown("**Units by model**")
+    summary = (
+        view[view["status"] == "ok"]
+        .groupby(["part_number", "product", "form_factor"], dropna=False)
+        .size()
+        .reset_index(name="units")
+        .sort_values("units", ascending=False)
+    )
+    st.dataframe(
+        summary, hide_index=True,
+        column_config={
+            "part_number": "Part number", "product": "Product",
+            "form_factor": "Form factor", "units": "Units",
+        },
+    )
+
+    st.markdown("**Every serial**")
+    st.dataframe(
+        view,
+        hide_index=True,
+        column_config={
+            col: st.column_config.TextColumn(
+                label,
+                help=("Suffix of the full SKU (e.g. P.1396.10-CME01 → CME01). Probably the "
+                      "programming profile; not confirmed by the API docs.")
+                if col == "config_code" else None,
+            )
+            for col, label in SERIAL_LABELS.items()
+        },
+    )
 
     d1, d2 = st.columns(2)
-    d1.download_button("Download CSV", to_csv_bytes(df), file_name="flexoptix_serials.csv",
+    d1.download_button("Download CSV", to_csv_bytes(view), file_name="flexoptix_serials.csv",
                        mime="text/csv", key="fx_dl_serials_csv")
     d2.download_button(
         "Download full JSON",
@@ -476,8 +675,14 @@ def tab_serials() -> None:
     )
 
     if res["raw"]:
-        chosen = st.selectbox("View the raw response for a serial", list(res["raw"]), key="fx_serial_pick")
-        st.json(res["raw"][chosen])
+        picked = st.selectbox("Details for one serial", list(res["raw"]), key="fx_serial_pick")
+        item = res["raw"][picked]
+        specs = _as_dict(item.get("product")).get("specifications") or []
+        if specs:
+            st.markdown("**All specifications**")
+            st.dataframe(pd.DataFrame(specs), hide_index=True)
+        if st.checkbox("Show raw JSON", key="fx_serial_rawjson"):
+            st.json(item)
 
 
 # --------------------------------------------------------------------------
