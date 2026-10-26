@@ -238,3 +238,21 @@ def delete_module(serial: str) -> None:
         del data["modules"][serial]
 
     _update(mutate, f"Delete transceiver {serial}")
+
+
+def delete_modules(serials) -> int:
+    """Deletes several modules in ONE commit. Returns how many were actually removed."""
+    serials = list(serials)
+    counts = {"deleted": 0}
+
+    def mutate(data: dict):
+        counts["deleted"] = 0
+        for serial in serials:
+            if serial in data["modules"]:
+                del data["modules"][serial]
+                counts["deleted"] += 1
+        if not counts["deleted"]:
+            return False
+
+    _update(mutate, f"Delete {len(serials)} transceiver(s) from inventory")
+    return counts["deleted"]
