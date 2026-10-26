@@ -1122,7 +1122,37 @@ def tab_inventory() -> None:
         c: st.column_config.TextColumn(l) for c, l in INV_LABELS.items() if c != "image"
     }
     column_config["image"] = st.column_config.ImageColumn("Image")
-    st.dataframe(df, hide_index=True, column_config=column_config)
+    # Click the checkbox at the left of a row to select it (the header checkbox selects all
+    # the rows shown). The version number changes after a bulk delete to clear the selection.
+    ver = st.session_state.get("fx_inv_table_v", 0)
+    event = st.dataframe(
+        df, hide_index=True, column_config=column_config,
+        on_select="rerun", selection_mode="multi-row", key=f"fx_inv_table_{ver}",
+    )
+    rows = [i for i in (event.selection.rows if event else []) if i < len(df)]
+    selected = df.iloc[rows]["serial"].tolist() if rows else []
+
+    if selected:
+        with st.container(border=True):
+            shown = ", ".join(selected[:8]) + (f" … (+{len(selected) - 8})" if len(selected) > 8 else "")
+            st.markdown(f"**{len(selected)} selected:** {shown}")
+            confirm = st.checkbox(
+                f"Yes, delete these {len(selected)} module(s) from the inventory",
+                key=f"fx_inv_bulk_confirm_{ver}",
+            )
+            if st.button("Delete selected", type="primary", disabled=not confirm,
+                         key=f"fx_inv_bulk_delete_{ver}"):
+                try:
+                    removed = inv_db.delete_modules(selected)
+                    st.session_state["fx_inv_table_v"] = ver + 1
+                    st.session_state.pop("fx_inv_pick", None)
+                    st.session_state["fx_inv_flash"] = f"Deleted {removed} module(s)."
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not delete: {exc}")
+    else:
+        st.caption("Tip: tick the checkbox at the left of one or more rows to delete them.")
+
     st.download_button("Download CSV", to_csv_bytes(df), file_name="transceivers_inventory.csv",
                        mime="text/csv", key="fx_inv_dl")
 
