@@ -792,11 +792,18 @@ def _summary(serial: str, rec: dict) -> str:
     return " · ".join(p for p in parts if p)
 
 
-def _add_serials_to_inventory(text: str, add_unknown: bool, modules: dict) -> None:
-    serials = [s for s in parse_serials(text, None) if s not in modules]
-    skipped = len(parse_serials(text, None)) - len(serials)
+def _add_serials_to_inventory(text: str, upload, add_unknown: bool, modules: dict) -> None:
+    parsed = parse_serials(text, upload)
+    serials = [s for s in parsed if s not in modules]
+    skipped = len(parsed) - len(serials)
+    if not parsed:
+        st.warning("No serial numbers to add: type them or upload a file.")
+        return
+    if len(parsed) > 1000:
+        st.warning("Maximum 1000 serials per run.")
+        return
     if not serials:
-        st.warning("Nothing to add: no serial numbers, or all of them are already in the inventory.")
+        st.warning("Nothing to add: all of them are already in the inventory.")
         return
 
     records: dict = {}
@@ -1056,12 +1063,16 @@ def tab_inventory() -> None:
 
     with st.expander("➕ Add serials to the inventory"):
         add_text = st.text_area("Serial numbers (one per line)", height=110, key="fx_inv_add_text")
+        add_upload = st.file_uploader(
+            "...or upload a CSV/TXT (column named serial / serial_number / sn, otherwise the first column)",
+            type=["csv", "txt"], key="fx_inv_add_file",
+        )
         add_unknown = st.checkbox(
             "Also add serials Flexoptix does not recognise (fill in their details by hand)",
             value=True, key="fx_inv_add_unknown",
         )
         if st.button("Look up and add", key="fx_inv_add_btn"):
-            _add_serials_to_inventory(add_text, add_unknown, modules)
+            _add_serials_to_inventory(add_text, add_upload, add_unknown, modules)
 
     if not modules:
         st.info("The inventory is empty. Add serials above, or from the Serials tab.")
@@ -1112,6 +1123,18 @@ def show() -> None:
 
     # Margin lives inside the Catalog tab; the other tabs read the stored value.
     margin = float(st.session_state.get("fx_margin", 20.0))
+
+    # Push the last tab (Catalog) to the far right end of the tab line.
+    st.markdown(
+        """
+        <style>
+        div[data-baseweb="tab-list"] button[data-baseweb="tab"]:last-of-type {
+            margin-left: auto;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     tab_inv, tab_prod, tab_ser, tab_cat = st.tabs(["Inventory", "Product", "Serials", "Catalog"])
     with tab_inv:
