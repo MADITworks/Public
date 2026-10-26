@@ -698,23 +698,44 @@ def tab_serials() -> None:
 # --------------------------------------------------------------------------
 OTHER = "Other…"
 
+
+def product_images(part_numbers) -> dict:
+    """{part_number: image_url}, from the products API (cached per session)."""
+    cache = st.session_state.setdefault("fx_img_cache", {})
+    missing = sorted({p for p in part_numbers if p and p not in cache})
+    for i in range(0, len(missing), 50):
+        chunk = missing[i:i + 50]
+        try:
+            r = api_get(
+                f"{API_V2}/flexoptix/products",
+                {"sku[]": chunk, "currency": CURRENCY},
+            )
+        except ApiError:
+            continue
+        if not r.ok:
+            continue
+        for prod in unescape_all(r.json()):
+            cache[str(prod.get("sku"))] = prod.get("image") or ""
+        for p in chunk:
+            cache.setdefault(p, "")
+    return cache
+
+
 INV_LABELS = {
     "serial": "Serial",
     "status": "Status",
     "model": "Model",
-    "form_factor": "Form factor",
     "vendor": "Vendor",
-    "profile_code": "Profile code",
-    "client": "Client",
+    "form_factor": "Form factor",
+    "fibre": "Fibre",
+    "connector": "Connector",
+    "image": "Image",
+    "client": "Customer ID",
     "device": "Device / switch",
     "device_type": "Device type",
     "module_bay": "Port",
     "location": "Location",
     "rack": "Rack",
-    "asset_tag": "Asset tag",
-    "order": "Order",
-    "customer_reference": "Customer ref.",
-    "tags": "Tags",
     "updated": "Updated",
 }
 INV_COLS = list(INV_LABELS)
@@ -738,6 +759,9 @@ def _model(rec: dict) -> str:
 
 
 def _inventory_frame(modules: dict) -> pd.DataFrame:
+    images = product_images(
+        {_flex(r).get("part_number", "") for r in modules.values()}
+    )
     rows = []
     for serial, rec in modules.items():
         fx = _flex(rec)
@@ -745,19 +769,17 @@ def _inventory_frame(modules: dict) -> pd.DataFrame:
             "serial": serial,
             "status": rec.get("status", ""),
             "model": _model(rec),
-            "form_factor": fx.get("form_factor", ""),
             "vendor": rec.get("vendor", ""),
-            "profile_code": rec.get("profile_code", ""),
+            "form_factor": fx.get("form_factor", ""),
+            "fibre": fx.get("fibre", ""),
+            "connector": fx.get("connector", ""),
+            "image": images.get(fx.get("part_number", ""), ""),
             "client": rec.get("client", ""),
             "device": rec.get("device", ""),
             "device_type": rec.get("device_type", ""),
             "module_bay": rec.get("module_bay", ""),
             "location": rec.get("location", ""),
             "rack": rec.get("rack", ""),
-            "asset_tag": rec.get("asset_tag", ""),
-            "order": fx.get("order", ""),
-            "customer_reference": fx.get("customer_reference", ""),
-            "tags": ", ".join(rec.get("tags") or []),
             "updated": rec.get("updated", ""),
         })
     return pd.DataFrame(rows, columns=INV_COLS).fillna("")
@@ -816,6 +838,74 @@ def _add_serials_to_inventory(text: str, add_unknown: bool, modules: dict) -> No
     st.rerun()
 
 
+def _duplicate_module(serial: str, modules: dict) -> None:
+    rec = modules[serial]
+    fx = _flex(rec)
+
+    def k(field: str) -> str:
+        return f"fx_invf_{serial}_{field}"
+
+    with st.expander("Duplicate this module"):
+        st.caption(
+            "Creates new modules with the same fields as this one (vendor, customer, device, "
+            "location, rack, status, comments...). The Flexoptix info is looked up for each new "
+            "serial. The port is NOT copied, because a port holds only one module."
+        )
+        new_text = st.text_area("New serial numbers (one per line)", height=90, key=k("dup_text"))
+        new_bay = st.text_input(
+            "Port for the new module (only used if you enter a single serial)", key=k("dup_bay")
+        )
+        if not st.button("Duplicate", key=k("dup_btn")):
+            return
+
+        serials = [s for s in parse_serials(new_text, None) if s not in modules]
+        if not serials:
+            st.warning("No new serial numbers (empty, or they already exist in the inventory).")
+            return
+
+        fields = {f: rec.get(f, "") for f in inv_db.TEXT_FIELDS}
+        fields["tags"] = list(rec.get("tags") or [])
+        fields["module_bay"] = new_bay.strip() if len(serials) == 1 else ""
+
+        # If Flexoptix does not know the new serial, reuse the model data of the original
+        # but not its delivery/order data.
+        fallback = {
+            key: ("" if key in ("order", "order_date", "customer_reference",
+                                "delivery_slip", "delivery_date") else v)
+            for key, v in fx.items()
+        }
+
+        records: dict = {}
+        not_found: list[str] = []
+        try:
+            for s in serials:
+                status_api, item = lookup_serial(s)
+                if status_api == "ok":
+                    row = serial_row(s, item)
+                    snap = flexoptix_snapshot(row)
+                    records[row["serial"]] = inv_db.new_record(row["serial"], snap, **fields)
+                else:
+                    not_found.append(s)
+                    records[s] = inv_db.new_record(s, fallback, **fields)
+                time.sleep(0.1)
+        except ApiError as exc:
+            st.error(str(exc))
+            return
+
+        try:
+            added, _present = inv_db.add_modules(records)
+        except Exception as exc:
+            st.error(f"Could not save to the inventory: {exc}")
+            return
+
+        msg = f"{added} module(s) duplicated from {serial}."
+        if not_found:
+            msg += (" Not recognised by Flexoptix (model data copied from the original): "
+                    + ", ".join(not_found) + ".")
+        st.session_state["fx_inv_flash"] = msg
+        st.rerun()
+
+
 def _edit_module(serial: str, modules: dict) -> None:
     rec = modules[serial]
     fx = _flex(rec)
@@ -860,7 +950,7 @@ def _edit_module(serial: str, modules: dict) -> None:
                   else vendor_pick)
         profile_code = st.text_input("Programming profile code", value=rec.get("profile_code", ""),
                                      placeholder="e.g. MSA01", key=key("profile_code"))
-        client = st.text_input("Client", value=rec.get("client", ""), key=key("client"))
+        client = st.text_input("Customer ID", value=rec.get("client", ""), key=key("client"))
         location = st.text_input("Location (site / room)", value=rec.get("location", ""), key=key("location"))
         rack = st.text_input("Rack / position", value=rec.get("rack", ""), key=key("rack"))
         installed_on = st.text_input("Installed on (YYYY-MM-DD)", value=rec.get("installed_on", ""),
@@ -923,6 +1013,8 @@ def _edit_module(serial: str, modules: dict) -> None:
     else:
         st.caption("No Flexoptix data for this serial.")
 
+    _duplicate_module(serial, modules)
+
     with st.expander("Delete this module"):
         confirm = st.checkbox(f"Yes, delete {serial} from the inventory", key=key("confirm_delete"))
         if st.button("Delete module", disabled=not confirm, key=key("delete")):
@@ -977,14 +1069,14 @@ def tab_inventory() -> None:
     # ── Table with filters ──
     df = _inventory_frame(modules)
     f1, f2, f3 = st.columns([3, 2, 2])
-    text = f1.text_input("Search", placeholder="serial, switch, port, client, location...", key="fx_inv_search")
+    text = f1.text_input("Search", placeholder="serial, switch, port, customer, location...", key="fx_inv_search")
     statuses = sorted(s for s in df["status"].unique() if s)
     sel_status = f2.multiselect("Status", statuses, key="fx_inv_status_filter")
     devices = sorted(d for d in df["device"].unique() if d)
     sel_device = f3.multiselect("Device / switch", devices, key="fx_inv_device_filter")
 
     if text:
-        hay = df.drop(columns=["updated"]).astype(str).agg(" ".join, axis=1).str.lower()
+        hay = df.drop(columns=["updated", "image"]).astype(str).agg(" ".join, axis=1).str.lower()
         mask = pd.Series(True, index=df.index)
         for term in text.lower().split():
             mask &= hay.str.contains(term, regex=False)
@@ -994,8 +1086,11 @@ def tab_inventory() -> None:
     if sel_device:
         df = df[df["device"].isin(sel_device)]
 
-    st.dataframe(df, hide_index=True,
-                 column_config={c: st.column_config.TextColumn(l) for c, l in INV_LABELS.items()})
+    column_config = {
+        c: st.column_config.TextColumn(l) for c, l in INV_LABELS.items() if c != "image"
+    }
+    column_config["image"] = st.column_config.ImageColumn("Image")
+    st.dataframe(df, hide_index=True, column_config=column_config)
     st.download_button("Download CSV", to_csv_bytes(df), file_name="transceivers_inventory.csv",
                        mime="text/csv", key="fx_inv_dl")
 
