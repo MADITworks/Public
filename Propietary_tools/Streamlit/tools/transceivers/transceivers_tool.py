@@ -3,8 +3,9 @@
 Page for the MADIT internal portal. Exposes show(), like the other tools.
 
 Tabs:
-  1. Inventory - where each module is (vendor, switch, port, location...), saved in the
-                private GitHub repo by inventory_db.py. Opens by default.
+  1. Inventory - where each module is (vendor, switch, port, location...), saved in a
+                Google Sheet by inventory_db.py (the same Sheet the mobile app uses).
+                Opens by default.
   2. Product  - lookup by part number with specifications and compatibilities.
   3. Serials  - lookup by serial number with Flexoptix's Serial Number API: model,
                 key specifications, delivery and order; units by model.
@@ -12,12 +13,15 @@ Tabs:
                 sell price (my price + margin), filters, CSV export. Margin and
                 connection test are shown only here.
 
-Credentials: Streamlit secrets, section [flexoptix] (and [github] for the inventory,
-the same one the Clients tool uses):
+Credentials: Streamlit secrets, section [flexoptix] (and [gsheets] +
+[gcp_service_account] for the inventory):
 
     [flexoptix]
     user = "your_api_user_email"
     password = "your_api_user_password"
+
+Part number of a module, in order of priority: 1) the uploaded CSV, 2) the Flexoptix
+serial API, 3) typed by hand.
 
 Catalogue cache is written to the system temp folder (never into the repository),
 so prices are not committed to the public repo.
@@ -401,6 +405,7 @@ def tab_product(margin: float) -> None:
 # Serial numbers (Flexoptix Serial Number API)
 # --------------------------------------------------------------------------
 SERIAL_HEADERS = {"serial", "serial_number", "serial number", "serialnumber", "sn", "s/n"}
+PART_HEADERS = {"part_number", "part number", "partnumber", "part no", "part no.", "pn", "p/n", "sku"}
 
 # label in product.specifications -> column in the results table
 KEY_SPECS = {
@@ -442,20 +447,28 @@ SNAPSHOT_KEYS = [
 ]
 
 
-def parse_serials(text: str, upload) -> list[str]:
-    """Serials from the text box (one per line) and/or an uploaded CSV/TXT.
+def parse_serial_pns(text: str, upload) -> dict[str, str]:
+    """{serial: part number}, in order and without repeats.
 
-    In an uploaded file, a header called serial / serial_number / sn selects the column;
-    otherwise the first column is used.
+    Serials come from the text box (one per line) and/or an uploaded CSV/TXT. In an
+    uploaded file, a header called serial / serial_number / sn selects the serial column
+    (otherwise the first column is used). If the file also has a header called
+    part number / part_number / pn / sku, that column gives the part number of each
+    serial; without it (or from the text box) the part number is "".
     """
-    serials: list[str] = []
-    seen: set[str] = set()
+    result: dict[str, str] = {}
 
-    def add(raw: str) -> None:
-        s = raw.strip().strip('"').strip("'").strip()
-        if s and s.lower() not in SERIAL_HEADERS and s not in seen:
-            seen.add(s)
-            serials.append(s)
+    def clean(raw: str) -> str:
+        return raw.strip().strip('"').strip("'").strip()
+
+    def add(raw: str, pn: str = "") -> None:
+        s = clean(raw)
+        if not s or s.lower() in SERIAL_HEADERS:
+            return
+        if s not in result:
+            result[s] = pn
+        elif pn and not result[s]:
+            result[s] = pn
 
     for line in text.splitlines():
         add(re.split(r"[,;\t]", line)[0])
@@ -463,17 +476,25 @@ def parse_serials(text: str, upload) -> list[str]:
     if upload is not None:
         content = upload.getvalue().decode("utf-8-sig", errors="ignore")
         rows = [re.split(r"[,;\t]", ln) for ln in content.splitlines() if ln.strip()]
-        col = 0
+        col, pn_col = 0, None
         if rows:
-            for i, cell in enumerate(rows[0]):
-                if cell.strip().strip('"').lower() in SERIAL_HEADERS:
+            heads = [clean(c).lower() for c in rows[0]]
+            for i, head in enumerate(heads):
+                if head in SERIAL_HEADERS:
                     col = i
                     rows = rows[1:]
+                    pn_col = next((j for j, h in enumerate(heads) if h in PART_HEADERS), None)
                     break
         for row in rows:
             if col < len(row):
-                add(row[col])
-    return serials
+                pn = clean(row[pn_col]) if pn_col is not None and pn_col < len(row) else ""
+                add(row[col], pn)
+    return result
+
+
+def parse_serials(text: str, upload) -> list[str]:
+    """Only the serial numbers (see parse_serial_pns)."""
+    return list(parse_serial_pns(text, upload))
 
 
 def normalise_response(data) -> dict | None:
@@ -578,13 +599,15 @@ def tab_serials() -> None:
     )
     text = st.text_area("Serial numbers (one per line)", height=140, key="fx_serials_text")
     upload = st.file_uploader(
-        "...or upload a CSV/TXT (column named serial / serial_number / sn, otherwise the first column)",
+        "...or upload a CSV/TXT (column named serial / serial_number / sn, otherwise the first column; "
+        "an optional part number column is also read)",
         type=["csv", "txt"], key="fx_serials_file",
     )
     refresh = st.checkbox("Re-query serials already looked up in this session", key="fx_serials_refresh")
 
     if st.button("Look up serials", type="primary", key="fx_serials_btn"):
-        serials = parse_serials(text, upload)
+        pns = parse_serial_pns(text, upload)
+        serials = list(pns)
         if not serials:
             st.warning("No serial numbers to look up.")
         elif len(serials) > 1000:
@@ -614,7 +637,7 @@ def tab_serials() -> None:
                 st.error(str(exc))
             finally:
                 bar.empty()
-            st.session_state["fx_serials"] = {"rows": rows, "raw": raw}
+            st.session_state["fx_serials"] = {"rows": rows, "raw": raw, "pns": pns}
 
     res = st.session_state.get("fx_serials")
     if not res:
@@ -671,16 +694,21 @@ def tab_serials() -> None:
         file_name="flexoptix_serials.json", mime="application/json", key="fx_dl_serials_json",
     )
 
-    # Send what is listed above to the inventory (one commit, no new API calls)
+    # Send what is listed above to the inventory (one request, no new API calls)
     listed = [s for s in view.loc[view["status"] == "ok", "serial"] if s in res["raw"]]
     if listed and st.button(f"Add the {len(listed)} listed serials to the inventory", key="fx_serials_to_inv"):
+        csv_pns = res.get("pns", {})
         records = {
-            s: inv_db.new_record(s, flexoptix_snapshot(serial_row(s, res["raw"][s]))) for s in listed
+            s: inv_db.new_record(
+                s, flexoptix_snapshot(serial_row(s, res["raw"][s])),
+                part_number=csv_pns.get(s, ""),
+            )
+            for s in listed
         }
         try:
             added, present = inv_db.add_modules(records)
             st.success(f"{added} added to the inventory, {present} were already there.")
-        except Exception as exc:  # GitHub / configuration problems
+        except Exception as exc:  # Google Sheets / configuration problems
             st.error(f"Could not save to the inventory: {exc}")
 
     if res["raw"]:
@@ -695,7 +723,7 @@ def tab_serials() -> None:
 
 
 # --------------------------------------------------------------------------
-# Inventory (stored in the private GitHub repo by inventory_db)
+# Inventory (stored in Google Sheets by inventory_db)
 # --------------------------------------------------------------------------
 OTHER = "Other…"
 
@@ -724,6 +752,7 @@ def product_images(part_numbers) -> dict:
 
 INV_LABELS = {
     "serial": "Serial",
+    "part_number": "Part number",
     "status": "Status",
     "model": "Model",
     "vendor": "Vendor",
@@ -755,26 +784,31 @@ def _flex(rec: dict) -> dict:
     return rec.get("flexoptix") or {}
 
 
+def _part_number(rec: dict) -> str:
+    """Part number of a module: the stored one, else the Flexoptix one."""
+    return rec.get("part_number") or _flex(rec).get("part_number", "")
+
+
 def _model(rec: dict) -> str:
     return rec.get("model") or _flex(rec).get("product", "")
 
 
 def _inventory_frame(modules: dict) -> pd.DataFrame:
-    images = product_images(
-        {_flex(r).get("part_number", "") for r in modules.values()}
-    )
+    images = product_images({_part_number(r) for r in modules.values()})
     rows = []
     for serial, rec in modules.items():
         fx = _flex(rec)
+        pn = _part_number(rec)
         rows.append({
             "serial": serial,
+            "part_number": pn,
             "status": rec.get("status", ""),
             "model": _model(rec),
             "vendor": rec.get("vendor", ""),
             "form_factor": fx.get("form_factor", ""),
             "fibre": fx.get("fibre", ""),
             "connector": fx.get("connector", ""),
-            "image": images.get(fx.get("part_number", ""), ""),
+            "image": images.get(pn, ""),
             "client": rec.get("client", ""),
             "device": rec.get("device", ""),
             "device_type": rec.get("device_type", ""),
@@ -788,12 +822,13 @@ def _inventory_frame(modules: dict) -> pd.DataFrame:
 
 def _summary(serial: str, rec: dict) -> str:
     place = " ".join(p for p in (rec.get("device", ""), rec.get("module_bay", "")) if p)
-    parts = [serial, _model(rec)[:40], rec.get("status", ""), place]
+    parts = [serial, _part_number(rec), _model(rec)[:40], rec.get("status", ""), place]
     return " · ".join(p for p in parts if p)
 
 
 def _add_serials_to_inventory(text: str, upload, add_unknown: bool, modules: dict) -> None:
-    parsed = parse_serials(text, upload)
+    pns = parse_serial_pns(text, upload)
+    parsed = list(pns)
     serials = [s for s in parsed if s not in modules]
     skipped = len(parsed) - len(serials)
     if not parsed:
@@ -812,13 +847,16 @@ def _add_serials_to_inventory(text: str, upload, add_unknown: bool, modules: dic
     try:
         for i, serial in enumerate(serials, 1):
             status, item = lookup_serial(serial)
+            pn = pns.get(serial, "")   # from the file: wins over the API
             if status == "ok":
                 row = serial_row(serial, item)
-                records[row["serial"]] = inv_db.new_record(row["serial"], flexoptix_snapshot(row))
+                records[row["serial"]] = inv_db.new_record(
+                    row["serial"], flexoptix_snapshot(row), part_number=pn
+                )
             else:
                 unknown.append(f"{serial} ({status})")
                 if add_unknown:
-                    records[serial] = inv_db.new_record(serial)
+                    records[serial] = inv_db.new_record(serial, part_number=pn)
             bar.progress(i / len(serials), text=f"{i}/{len(serials)}: {serial} → {status}")
             time.sleep(0.1)
     except ApiError as exc:
@@ -856,9 +894,9 @@ def _duplicate_module(serial: str, modules: dict) -> None:
     with st.expander("Duplicate this module"):
         st.caption(
             "Creates one or many new modules with the same fields as this one (vendor, customer, "
-            "device, location, rack, status, comments...). Type the serials or upload a CSV/TXT. "
-            "The Flexoptix info is looked up for each new serial. The port is NOT copied, because "
-            "a port holds only one module."
+            "device, location, rack, status, comments...). Type the serials or upload a CSV/TXT "
+            "(an optional part number column is read too). The Flexoptix info is looked up for "
+            "each new serial. The port is NOT copied, because a port holds only one module."
         )
         new_text = st.text_area("New serial numbers (one per line)", height=90, key=k("dup_text"))
         new_upload = st.file_uploader(
@@ -872,7 +910,8 @@ def _duplicate_module(serial: str, modules: dict) -> None:
         if not st.button("Duplicate", key=k("dup_btn")):
             return
 
-        parsed = parse_serials(new_text, new_upload)
+        pns = parse_serial_pns(new_text, new_upload)
+        parsed = list(pns)
         if not parsed:
             st.warning("No serial numbers: type them or upload a file.")
             return
@@ -902,14 +941,17 @@ def _duplicate_module(serial: str, modules: dict) -> None:
         bar = st.progress(0.0, text="Looking up...")
         try:
             for i, s in enumerate(serials, 1):
+                # Part number: the file first; otherwise the API (or, if Flexoptix does not
+                # know the serial, the original module's). Never copied blindly.
+                new_fields = {**fields, "part_number": pns.get(s, "")}
                 status_api, item = lookup_serial(s)
                 if status_api == "ok":
                     row = serial_row(s, item)
                     snap = flexoptix_snapshot(row)
-                    records[row["serial"]] = inv_db.new_record(row["serial"], snap, **fields)
+                    records[row["serial"]] = inv_db.new_record(row["serial"], snap, **new_fields)
                 else:
                     not_found.append(s)
-                    records[s] = inv_db.new_record(s, fallback, **fields)
+                    records[s] = inv_db.new_record(s, fallback, **new_fields)
                 bar.progress(i / len(serials), text=f"{i}/{len(serials)}: {s} → {status_api}")
                 time.sleep(0.1)
         except ApiError as exc:
@@ -946,6 +988,10 @@ def _edit_module(serial: str, modules: dict) -> None:
 
     # ── Module (like NetBox: device, bay, status, description, asset tag) ──
     with left:
+        part_number = st.text_input(
+            "Part number", value=_part_number(rec), key=key("part_number"),
+            help="From the uploaded file, else from the Flexoptix serial API, else typed by hand.",
+        )
         statuses = list(inv_db.STATUSES)
         if rec.get("status") and rec["status"] not in statuses:
             statuses.append(rec["status"])
@@ -986,7 +1032,7 @@ def _edit_module(serial: str, modules: dict) -> None:
 
     model = rec.get("model", "")
     if not fx.get("part_number"):
-        model = st.text_input("Model / part number (Flexoptix does not know this serial)",
+        model = st.text_input("Model (Flexoptix does not know this serial)",
                               value=model, key=key("model"))
 
     tags_text = st.text_input("Tags (comma-separated)", value=", ".join(rec.get("tags") or []),
@@ -1007,6 +1053,7 @@ def _edit_module(serial: str, modules: dict) -> None:
     b1, b2, _ = st.columns([1, 1.4, 3])
     if b1.button("Save changes", type="primary", key=key("save")):
         changes = {
+            "part_number": part_number.strip(),
             "status": status, "device": device.strip(), "device_type": device_type.strip(),
             "module_bay": module_bay.strip(), "asset_tag": asset_tag.strip(),
             "description": description.strip(), "vendor": (vendor or "").strip(),
@@ -1028,7 +1075,11 @@ def _edit_module(serial: str, modules: dict) -> None:
             if status_api != "ok":
                 st.error(f"Flexoptix: {status_api}")
             else:
-                inv_db.save_module(serial, {"flexoptix": flexoptix_snapshot(serial_row(serial, item))})
+                snap = flexoptix_snapshot(serial_row(serial, item))
+                changes = {"flexoptix": snap}
+                if not rec.get("part_number"):      # fill the part number only if it is empty
+                    changes["part_number"] = snap.get("part_number", "")
+                inv_db.save_module(serial, changes)
                 st.session_state["fx_inv_flash"] = f"Flexoptix info refreshed for {serial}."
                 st.rerun()
         except Exception as exc:  # st.rerun() is not an Exception, so it passes through
@@ -1063,10 +1114,9 @@ def tab_inventory() -> None:
     top1, top2 = st.columns([5, 1])
     top1.caption(
         "Where each module is installed and what it is programmed for, similar to NetBox. "
-        "Saved in the private GitHub repository (Propietary_tools/Transceivers/inventory.json)."
+        "Saved in Google Sheets, shared with the mobile app."
     )
-    reload = top2.button("Reload from Google Sheets", key="fx_inv_reload")
-
+    reload = top2.button("Reload", key="fx_inv_reload", help="Read the Google Sheet again")
     if reload:
         for k in [k for k in st.session_state if str(k).startswith("fx_invf_")]:
             del st.session_state[k]
@@ -1085,7 +1135,8 @@ def tab_inventory() -> None:
     with st.expander("➕ Add serials to the inventory"):
         add_text = st.text_area("Serial numbers (one per line)", height=110, key="fx_inv_add_text")
         add_upload = st.file_uploader(
-            "...or upload a CSV/TXT (column named serial / serial_number / sn, otherwise the first column)",
+            "...or upload a CSV/TXT (column named serial / serial_number / sn, otherwise the first "
+            "column; an optional “Part Number” column is also read and takes priority)",
             type=["csv", "txt"], key="fx_inv_add_file",
         )
         add_unknown = st.checkbox(
@@ -1102,7 +1153,8 @@ def tab_inventory() -> None:
     # ── Table with filters ──
     df = _inventory_frame(modules)
     f1, f2, f3 = st.columns([3, 2, 2])
-    text = f1.text_input("Search", placeholder="serial, switch, port, customer, location...", key="fx_inv_search")
+    text = f1.text_input("Search", placeholder="serial, part number, switch, port, customer, location...",
+                         key="fx_inv_search")
     statuses = sorted(s for s in df["status"].unique() if s)
     sel_status = f2.multiselect("Status", statuses, key="fx_inv_status_filter")
     devices = sorted(d for d in df["device"].unique() if d)
