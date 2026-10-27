@@ -23,7 +23,7 @@ The Sheet must be shared (Editor) with the service account's client_email.
 
 Layout: ONE ROW PER MODULE, `serial` is the unique key. Nested data is flattened:
 
-    serial, status, model, vendor, profile_code, client, device, device_type,
+    serial, part_number, status, model, vendor, profile_code, client, device, device_type,
     module_bay, location, rack, asset_tag, installed_on, description, comments,
     tags (comma-separated), image (URL),
     flex_part_number, flex_product, flex_full_sku, flex_form_factor, flex_compliance,
@@ -65,7 +65,7 @@ STATUSES = ["In stock", "Reserved", "Delivered to client", "Installed", "Spare",
 TEXT_FIELDS = (
     "status", "vendor", "profile_code", "client", "device", "device_type", "module_bay",
     "location", "rack", "asset_tag", "installed_on", "description", "comments", "model",
-    "image",
+    "image", "part_number",
 )
 
 # Keys of the `flexoptix` snapshot that get their own column (flex_<key>)
@@ -78,7 +78,7 @@ FLEX_PREFIX = "flex_"
 SYSTEM_COLS = ("created", "updated", "updated_by")
 
 COLUMNS = [
-    "serial", "status", "model", "vendor", "profile_code", "client", "device", "device_type",
+    "serial", "part_number", "status", "model", "vendor", "profile_code", "client", "device", "device_type",
     "module_bay", "location", "rack", "asset_tag", "installed_on", "description", "comments",
     "tags", "image",
     *[FLEX_PREFIX + k for k in FLEX_KEYS],
@@ -201,6 +201,8 @@ def _to_record(d: dict) -> dict:
         if value != "":
             fx[key] = value
     rec["flexoptix"] = fx
+    if not rec["part_number"]:              # older rows: use the Flexoptix one
+        rec["part_number"] = fx.get("part_number", "")
 
     for col in SYSTEM_COLS:
         rec[col] = d.get(col, "")
@@ -262,6 +264,9 @@ def new_record(serial: str, flexoptix: dict | None = None, **fields) -> dict:
     for key, value in fields.items():
         if key in TEXT_FIELDS or key == "tags":
             rec[key] = value
+    # Part number priority: 1) the one given (e.g. from the uploaded CSV),
+    # 2) the one from the Flexoptix serial API, 3) empty (typed by hand later)
+    rec["part_number"] = rec["part_number"] or (flexoptix or {}).get("part_number", "")
     return rec
 
 
