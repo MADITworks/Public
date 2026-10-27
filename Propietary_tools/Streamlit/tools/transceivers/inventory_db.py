@@ -21,16 +21,22 @@ Needs these Streamlit secrets:
 
 The Sheet must be shared (Editor) with the service account's client_email.
 
-Layout: ONE ROW PER MODULE, `serial` is the unique key. Nested data is flattened:
+Layout: ONE ROW PER MODULE, `serial` is the unique key. Columns, in this order:
 
-    serial, part_number, status, model, vendor, profile_code, client, device, device_type,
-    module_bay, location, rack, asset_tag, installed_on, description, comments,
-    tags (comma-separated), image (URL),
-    flex_part_number, flex_product, flex_full_sku, flex_form_factor, flex_compliance,
-    flex_distance, flex_wavelength_tx, flex_temp_range, flex_connector, flex_fibre,
-    flex_delivery_slip, flex_delivery_date, flex_order, flex_order_date,
-    flex_customer_reference, flexoptix_json (any other flexoptix key),
-    created, updated, updated_by
+    IDENTITY      serial, part_number, model, image (product photo URL)
+    STATE/PLACE   status, client, device, device_type, module_bay, location, rack,
+                  installed_on
+    PROGRAMMING   vendor, profile_code
+    OTHER         asset_tag, description, comments, tags (comma-separated)
+    FLEXOPTIX     flex_full_sku, flex_form_factor, flex_compliance, flex_distance,
+    (read-only)   flex_wavelength_tx, flex_temp_range, flex_connector, flex_fibre,
+                  flex_delivery_slip, flex_delivery_date, flex_order, flex_order_date,
+                  flex_customer_reference
+    AUDIT         created, updated, updated_by
+
+Nothing is stored twice: the Flexoptix part number and product name live in
+`part_number` and `model` (which you can edit), not in flex_* columns.
+The `flexoptix` dict that the page works with is rebuilt from these columns on load.
 
 Writes touch ONLY the cells that change in the row of that serial (never the whole
 sheet), so edits made from the phone and from Streamlit do not overwrite each other
@@ -41,7 +47,6 @@ load_inventory(force=True).
 """
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timezone
 
@@ -68,21 +73,28 @@ TEXT_FIELDS = (
     "image", "part_number",
 )
 
-# Keys of the `flexoptix` snapshot that get their own column (flex_<key>)
+# Keys of the `flexoptix` snapshot that get their own read-only column (flex_<key>).
+# part_number and product are NOT here: they are stored in `part_number` and `model`.
 FLEX_KEYS = (
-    "part_number", "product", "full_sku", "form_factor", "compliance", "distance",
-    "wavelength_tx", "temp_range", "connector", "fibre",
-    "delivery_slip", "delivery_date", "order", "order_date", "customer_reference",
+    "full_sku", "form_factor", "compliance", "distance", "wavelength_tx", "temp_range",
+    "connector", "fibre", "delivery_slip", "delivery_date", "order", "order_date",
+    "customer_reference",
 )
 FLEX_PREFIX = "flex_"
 SYSTEM_COLS = ("created", "updated", "updated_by")
 
 COLUMNS = [
-    "serial", "part_number", "status", "model", "vendor", "profile_code", "client", "device", "device_type",
-    "module_bay", "location", "rack", "asset_tag", "installed_on", "description", "comments",
-    "tags", "image",
+    # identity
+    "serial", "part_number", "model", "image",
+    # state and place
+    "status", "client", "device", "device_type", "module_bay", "location", "rack", "installed_on",
+    # programming
+    "vendor", "profile_code",
+    # other
+    "asset_tag", "description", "comments", "tags",
+    # flexoptix (read-only)
     *[FLEX_PREFIX + k for k in FLEX_KEYS],
-    "flexoptix_json",
+    # audit
     *SYSTEM_COLS,
 ]
 
@@ -187,22 +199,18 @@ def _to_record(d: dict) -> dict:
     rec["serial"] = d.get("serial", "").strip()
     rec["tags"] = [t.strip() for t in d.get("tags", "").split(",") if t.strip()]
 
+    # Rebuild the `flexoptix` dict the page expects: the read-only columns plus the
+    # part number and product name (kept in part_number / model).
     fx: dict = {}
-    extra = d.get("flexoptix_json", "").strip()
-    if extra:
-        try:
-            loaded = json.loads(extra)
-            if isinstance(loaded, dict):
-                fx.update(loaded)
-        except ValueError:
-            pass
     for key in FLEX_KEYS:
         value = d.get(FLEX_PREFIX + key, "")
         if value != "":
             fx[key] = value
+    if rec["part_number"]:
+        fx["part_number"] = rec["part_number"]
+    if rec["model"]:
+        fx["product"] = rec["model"]
     rec["flexoptix"] = fx
-    if not rec["part_number"]:              # older rows: use the Flexoptix one
-        rec["part_number"] = fx.get("part_number", "")
 
     for col in SYSTEM_COLS:
         rec[col] = d.get(col, "")
@@ -210,15 +218,13 @@ def _to_record(d: dict) -> dict:
 
 
 def _to_cells(changes: dict) -> dict[str, str]:
-    """{column: text} for a (partial) record. `flexoptix` replaces the whole snapshot."""
+    """{column: text} for a (partial) record. `flexoptix` replaces the flex_* columns."""
     cells: dict[str, str] = {}
     for key, value in changes.items():
-        if key == "flexoptix":
+        if key == "flexoptix":                # only the read-only columns
             fx = value or {}
             for k in FLEX_KEYS:
                 cells[FLEX_PREFIX + k] = _cell(fx.get(k, ""))
-            extra = {k: v for k, v in fx.items() if k not in FLEX_KEYS}
-            cells["flexoptix_json"] = json.dumps(extra, ensure_ascii=False) if extra else ""
         elif key == "tags":
             cells["tags"] = ", ".join(str(t) for t in (value or []))
         else:
@@ -267,6 +273,8 @@ def new_record(serial: str, flexoptix: dict | None = None, **fields) -> dict:
     # Part number priority: 1) the one given (e.g. from the uploaded CSV),
     # 2) the one from the Flexoptix serial API, 3) empty (typed by hand later)
     rec["part_number"] = rec["part_number"] or (flexoptix or {}).get("part_number", "")
+    # Same for the model name: the one given, else the Flexoptix product name
+    rec["model"] = rec["model"] or (flexoptix or {}).get("product", "")
     return rec
 
 
