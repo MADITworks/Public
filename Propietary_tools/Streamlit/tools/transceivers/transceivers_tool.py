@@ -1065,7 +1065,8 @@ def tab_inventory() -> None:
         "Where each module is installed and what it is programmed for, similar to NetBox. "
         "Saved in the private GitHub repository (Propietary_tools/Transceivers/inventory.json)."
     )
-    reload = top2.button("Reload from GitHub", key="fx_inv_reload")
+    reload = top2.button("Reload from Google Sheets", key="fx_inv_reload")
+
     if reload:
         for k in [k for k in st.session_state if str(k).startswith("fx_invf_")]:
             del st.session_state[k]
