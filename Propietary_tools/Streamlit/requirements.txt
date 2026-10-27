@@ -4,3 +4,4 @@ pandas>=2.2.3
 xlrd>=2.0.1
 openpyxl
 pillow>=11
+gspread>=6.0
