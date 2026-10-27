@@ -706,6 +706,7 @@ def tab_serials() -> None:
             for s in listed
         }
         try:
+            _attach_images(records)
             added, present = inv_db.add_modules(records)
             st.success(f"{added} added to the inventory, {present} were already there.")
         except Exception as exc:  # Google Sheets / configuration problems
@@ -748,6 +749,15 @@ def product_images(part_numbers) -> dict:
         for p in chunk:
             cache.setdefault(p, "")
     return cache
+
+
+def _attach_images(records: dict) -> None:
+    """Fill each record's `image` (product photo URL) from the products API."""
+    imgs = product_images({r.get("part_number", "") for r in records.values()})
+    for r in records.values():
+        url = imgs.get(r.get("part_number", ""), "")
+        if url:
+            r["image"] = url
 
 
 INV_LABELS = {
@@ -794,7 +804,7 @@ def _model(rec: dict) -> str:
 
 
 def _inventory_frame(modules: dict) -> pd.DataFrame:
-    images = product_images({_part_number(r) for r in modules.values()})
+    images = product_images({_part_number(r) for r in modules.values() if not r.get("image")})
     rows = []
     for serial, rec in modules.items():
         fx = _flex(rec)
@@ -808,7 +818,7 @@ def _inventory_frame(modules: dict) -> pd.DataFrame:
             "form_factor": fx.get("form_factor", ""),
             "fibre": fx.get("fibre", ""),
             "connector": fx.get("connector", ""),
-            "image": images.get(pn, ""),
+            "image": rec.get("image") or images.get(pn, ""),
             "client": rec.get("client", ""),
             "device": rec.get("device", ""),
             "device_type": rec.get("device_type", ""),
@@ -870,6 +880,7 @@ def _add_serials_to_inventory(text: str, upload, add_unknown: bool, modules: dic
                    "Tick “Also add serials Flexoptix does not recognise” to add them by hand.")
         return
     try:
+        _attach_images(records)
         added, present = inv_db.add_modules(records)
     except Exception as exc:
         st.error(f"Could not save to the inventory: {exc}")
@@ -961,6 +972,7 @@ def _duplicate_module(serial: str, modules: dict) -> None:
             bar.empty()
 
         try:
+            _attach_images(records)
             added, _present = inv_db.add_modules(records)
         except Exception as exc:
             st.error(f"Could not save to the inventory: {exc}")
@@ -1007,7 +1019,8 @@ def _edit_module(serial: str, modules: dict) -> None:
 
     # ── Programming, ownership and place ──
     with right:
-        suggestions = set(compat_vendors(fx["part_number"])) if fx.get("part_number") else set()
+        pn_now = _part_number(rec)
+        suggestions = set(compat_vendors(pn_now)) if pn_now else set()
         suggestions |= {m.get("vendor") for m in modules.values() if m.get("vendor")}
         current_vendor = rec.get("vendor", "")
         if current_vendor:
@@ -1030,10 +1043,8 @@ def _edit_module(serial: str, modules: dict) -> None:
         installed_on = st.text_input("Installed on (YYYY-MM-DD)", value=rec.get("installed_on", ""),
                                      key=key("installed_on"))
 
-    model = rec.get("model", "")
-    if not fx.get("part_number"):
-        model = st.text_input("Model (Flexoptix does not know this serial)",
-                              value=model, key=key("model"))
+    model = st.text_input("Model", value=_model(rec), key=key("model"),
+                          help="From the Flexoptix serial API; type it if Flexoptix does not know the serial.")
 
     tags_text = st.text_input("Tags (comma-separated)", value=", ".join(rec.get("tags") or []),
                               key=key("tags"))
@@ -1077,15 +1088,17 @@ def _edit_module(serial: str, modules: dict) -> None:
             else:
                 snap = flexoptix_snapshot(serial_row(serial, item))
                 changes = {"flexoptix": snap}
-                if not rec.get("part_number"):      # fill the part number only if it is empty
+                if not rec.get("part_number"):      # fill these only if they are empty
                     changes["part_number"] = snap.get("part_number", "")
+                if not rec.get("model"):
+                    changes["model"] = snap.get("product", "")
                 inv_db.save_module(serial, changes)
                 st.session_state["fx_inv_flash"] = f"Flexoptix info refreshed for {serial}."
                 st.rerun()
         except Exception as exc:  # st.rerun() is not an Exception, so it passes through
             st.error(str(exc))
 
-    if fx:
+    if any(fx.get(k) for k in inv_db.FLEX_KEYS):
         with st.expander("Flexoptix info (read-only)"):
             info = [{"Field": FLEX_INFO_LABELS[k], "Value": fx.get(k, "")} for k in FLEX_INFO_LABELS if fx.get(k)]
             st.dataframe(pd.DataFrame(info), hide_index=True)
